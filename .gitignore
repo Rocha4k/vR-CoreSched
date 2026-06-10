@@ -1,0 +1,13 @@
+bin/
+obj/
+node_modules/
+dist/
+.vs/
+.idea/
+.vscode/.ropeproject/
+*.user
+*.suo
+*.cache
+*.log
+*.db
+*.sqlite
