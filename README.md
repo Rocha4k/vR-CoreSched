@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="static/img/vR-Clean.png" alt="vR-CoreSched" width="220">
+<img src="img/vR-Clean.png" alt="vR-CoreSched" width="220">
 
 # vR-CoreSched
 
