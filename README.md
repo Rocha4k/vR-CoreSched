@@ -1,58 +1,53 @@
+<div align="center">
+
+<img src="static/img/vR-Clean.png" alt="vR-CoreSched" width="220">
+
 # vR-CoreSched
 
-Plataforma de monitorização e controlo de armazém com telemetria IoT simulada, MQTT, motor de regras em tempo real, iluminação interativa e analytics de consumo.
+Warehouse monitoring and control platform featuring simulated IoT telemetry, MQTT, real-time rules engine, interactive lighting, and consumption analytics.
 
-[![.NET Core](https://img.shields.io/badge/.NET%20Core-512BD4?style=flat-square&logo=.net&logoColor=white)](https://dotnet.microsoft.com/)
-[![React](https://img.shields.io/badge/React-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
-[![MQTT](https://img.shields.io/badge/MQTT-3C525C?style=flat-square&logo=eclipse-mosquitto&logoColor=white)](https://mqtt.org/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat-square&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
-[![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
+![.NET Core](https://img.shields.io/badge/.NET%20Core-111111?style=flat-square&logo=.net&logoColor=white)
+![React](https://img.shields.io/badge/React-111111?style=flat-square&logo=react&logoColor=white)
+![MQTT](https://img.shields.io/badge/MQTT-111111?style=flat-square&logo=eclipse-mosquitto&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-111111?style=flat-square&logo=postgresql&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-111111?style=flat-square&logo=docker&logoColor=white)
+
+</div>
 
 ---
 
 ## Overview
 
-O **vR-CoreSched** é uma solução integrada para a gestão, monitorização e automatização de armazéns industriais. Através da ingestão de telemetria via MQTT e processamento em tempo real com um motor de regras dinâmico, a plataforma permite acompanhar o estado operacional de máquinas, gerir alertas críticos e controlar sistemas de iluminação diretamente sobre uma planta interativa.
+vR-CoreSched is an integrated solution designed for industrial warehouse management, monitoring, and automation. By ingesting telemetry via MQTT and processing data in real time through a dynamic rules engine, the platform enables live tracking of machine status, critical alert dispatching, and reactive lighting system controls directly on an interactive map layout.
 
-O foco principal é a eficiência operacional e a rapidez de resposta, consolidando num único ecossistema desde a telemetria bruta de sensores até à agregação de dados para relatórios analíticos de consumo e custos.
-
----
-
-## Módulos do Sistema
-
-* **Operação em Tempo Real** — Ingestão contínua de telemetria, disparo instantâneo de alertas e controlo reativo de iluminação.
-* **Administração de Regras e Equipamentos** — Gestão dinâmica de regras de negócio, máquinas e zonas operacionais com persistência robusta.
-* **Planta Interativa SVG** — Visualização dinâmica do armazém baseada em SVG, com contornos editáveis e hotspots reposicionáveis diretamente na interface.
-* **Analytics e Agregação** — Processamento e agregação horária de consumo de energia para geração acelerada de relatórios.
-* **Gestão de Alertas e Manutenção** — Sistema de *acknowledge* (reconhecimento) de incidentes com criação automática de histórico para auditoria e manutenção.
-* **Segurança e Perfis** — Autenticação via JWT com suporte a refresh tokens rotativos e três níveis de acesso: Operador, Supervisor e Admin.
-* **Reporting Avançado** — Filtros avançados por mês, máquina e zona, com suporte à exportação de dados em formatos CSV e PDF.
+The main focus is operational efficiency and rapid response time, bridging the gap between raw high-frequency sensor telemetry and aggregated historical data for cost and consumption analytics.
 
 ---
 
-## Objetivo do MVP
+## System Modules
 
-1. **Simulação Industrial:** Simular o comportamento de máquinas reais gerando dados de temperatura, vibração, RPM e consumo.
-2. **Ingestão em Tempo Real:** Capturar telemetria via broker MQTT e processar alertas críticos instantaneamente.
-3. **Controlo Visual:** Disponibilizar uma interface web para controlo de iluminação sobre a planta SVG com atualizações em tempo real (SignalR).
-4. **Eficiência de Dados:** Agregar consumo energético por hora para produzir relatórios de custo otimizados.
-
----
-
-## Tech Stack
-
-* **Backend:** ASP.NET Core com SignalR (WebSockets) e cliente MQTT.
-* **Simulador:** Worker Service em .NET para simulação concorrente de carga industrial.
-* **Frontend:** React, Vite e TypeScript para uma SPA rápida e tipada.
-* **Cache & Message Broker:** Redis para estado quente e Mosquitto/Broker para mensagens MQTT.
-* **Base de Dados:** PostgreSQL para persistência relacional e dados históricos.
-* **Infraestrutura:** Docker e Docker Compose para orquestração local do ambiente.
+* **Real-Time Operations** — Continuous telemetry ingestion, instantaneous alert triggering, and reactive lighting control.
+* **Rules & Equipment Administration** — Dynamic management of business rules, machines, and zones backed by robust persistence.
+* **Interactive SVG Layout** — Dynamic warehouse floor plan based on SVG, featuring editable boundaries and repositionable hotspots directly within the UI.
+* **Analytics & Aggregation** — Automated hourly consumption aggregation for optimized, ultra-fast reporting.
+* **Alert & Maintenance Workflow** — Event acknowledgment system with automatic logging for maintenance history and auditing.
+* **Security & Profiles** — JWT-based authentication featuring rotating refresh tokens and three distinct access levels: Operator, Supervisor, and Admin.
+* **Advanced Reporting** — Granular reporting with filters by month, machine, and zone, supporting CSV and PDF exports.
 
 ---
 
-## Como Correr
+## MVP Objectives
 
-### 1. Subir a Infraestrutura (Docker)
-Certifica-te de que tens o Docker instalado e executa o seguinte comando na raiz do projeto onde se encontra o `docker-compose.yml`:
+1. **Industrial Simulation:** Simulate real-world machinery by generating temperature, vibration, RPM, and power consumption metrics.
+2. **Real-Time Ingestion:** Ingest telemetry via an MQTT broker and instantly evaluate/trigger critical system alerts.
+3. **Visual Control:** Deliver a web UI to toggle and monitor lighting over an SVG floor plan with instant updates (via SignalR).
+4. **Data Efficiency:** Aggregate energy consumption hourly to output streamlined financial and cost reports.
+
+---
+
+## How to Run
+
+### 1. Spin up the Infrastructure (Docker)
+Ensure Docker is installed and running, then execute the following command in the project root (where `docker-compose.yml` is located):
 ```bash
 docker-compose up -d
