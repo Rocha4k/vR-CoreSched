@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { DashboardView } from './components/dashboard/DashboardView';
 import { FloorplanEditor } from './components/floorplan/FloorplanEditor';
@@ -53,6 +53,7 @@ const legacyTokenStorageKey = 'vrcoresched.token';
 type AppTab = 'dashboard' | 'reports' | 'profiles' | 'admin' | 'floorplan';
 
 export default function App() {
+  const pendingToggles = useRef(new Set<string>());
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(fallbackWorkspace);
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
   const [connectionStatus, setConnectionStatus] = useState('a ligar...');
@@ -171,6 +172,7 @@ export default function App() {
 
     const handleLighting = (lighting: { id: string; zone: string; name: string; isOn: boolean; lastChangedAt: string; lastCommandSource: string }) => {
       if (!mounted) return;
+      if (pendingToggles.current.has(lighting.id)) return;
 
       setWorkspace(current => ({
         ...current,
@@ -345,6 +347,8 @@ export default function App() {
   const handleToggleLight = async (deviceId: string) => {
     if (!accessToken) return;
 
+    pendingToggles.current.add(deviceId);
+
     setWorkspace(current => ({
       ...current,
       dashboard: {
@@ -357,6 +361,8 @@ export default function App() {
       await toggleLighting(deviceId, accessToken);
     } catch {
       await refreshWorkspace();
+    } finally {
+      pendingToggles.current.delete(deviceId);
     }
   };
 

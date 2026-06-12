@@ -198,12 +198,12 @@ body {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1.2fr 0.9fr;
-  gap: 20px;
+  grid-template-columns: 1.35fr 0.85fr;
+  gap: 22px;
 }
 
 .dashboard-grid--lower {
-  margin-top: 20px;
+  margin-top: 22px;
   grid-template-columns: 1fr 1fr;
 }
 
@@ -490,7 +490,9 @@ body {
 
 .panel {
   border-radius: 22px;
-  padding: 20px;
+  padding: 24px;
+  position: relative;
+  overflow: hidden;
 }
 
 .panel-header {
@@ -589,21 +591,184 @@ body {
   fill: #38bdf8;
 }
 
-.map-actions {
+/* ── Lighting Control Panel ───────────────────────────── */
+
+.lighting-panel {
+  margin-top: 18px;
+  padding: 18px;
+  border-radius: 18px;
+  background: rgba(7, 13, 26, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.lighting-panel__header {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.lighting-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 0.92rem;
+  color: var(--text);
+}
+
+.lighting-panel__badge {
+  font-size: 0.8rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.lamp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.lamp-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 10px;
-  margin-top: 14px;
+  padding: 16px 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.7);
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    transform 150ms ease,
+    border-color 200ms ease,
+    background 200ms ease,
+    box-shadow 200ms ease;
+  text-align: center;
 }
 
-.map-action.is-on {
-  border-color: rgba(34, 197, 94, 0.28);
-  color: #dcfce7;
+.lamp-card:hover {
+  transform: translateY(-2px);
 }
 
-.map-action.is-off {
-  border-color: rgba(100, 116, 139, 0.28);
-  color: #cbd5e1;
+.lamp-card--on {
+  border-color: rgba(245, 158, 11, 0.45);
+  background: rgba(27, 20, 5, 0.82);
+  box-shadow:
+    0 0 24px rgba(245, 158, 11, 0.18),
+    inset 0 0 18px rgba(253, 224, 71, 0.06);
+}
+
+.lamp-card--off {
+  border-color: rgba(71, 85, 105, 0.3);
+  background: rgba(10, 15, 28, 0.75);
+}
+
+.lamp-card__glow {
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+}
+
+.lamp-card--on .lamp-card__glow {
+  background: radial-gradient(circle, rgba(253, 224, 71, 0.28) 0%, transparent 70%);
+  opacity: 1;
+}
+
+.lamp-card--off .lamp-card__glow {
+  opacity: 0;
+}
+
+.lamp-card__icon {
+  position: relative;
+  z-index: 1;
+  width: 52px;
+  height: 68px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lamp-bulb-svg {
+  width: 100%;
+  height: 100%;
+  filter: drop-shadow(0 0 0px transparent);
+  transition: filter 250ms ease;
+}
+
+.lamp-card--on .lamp-bulb-svg {
+  filter: drop-shadow(0 0 8px rgba(253, 224, 71, 0.7)) drop-shadow(0 0 18px rgba(245, 158, 11, 0.4));
+}
+
+.lamp-card__info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  position: relative;
+  z-index: 1;
+}
+
+.lamp-card__name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.lamp-card__zone {
+  font-size: 0.73rem;
+  color: var(--muted);
+}
+
+.lamp-card__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 3px 9px;
+  border-radius: 999px;
+}
+
+.lamp-card__status--on {
+  color: #fde047;
+  background: rgba(253, 224, 71, 0.12);
+  border: 1px solid rgba(253, 224, 71, 0.25);
+}
+
+.lamp-card__status--off {
+  color: var(--muted);
+  background: rgba(71, 85, 105, 0.18);
+  border: 1px solid rgba(71, 85, 105, 0.25);
+}
+
+.lamp-card__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.lamp-card__status--on .lamp-card__dot {
+  background: #fde047;
+  box-shadow: 0 0 4px rgba(253, 224, 71, 0.8);
+}
+
+.lamp-card__status--off .lamp-card__dot {
+  background: #475569;
 }
 
 .admin-panel {
@@ -735,45 +900,88 @@ body {
 .machine-list {
   display: grid;
   gap: 14px;
+  overflow-y: auto;
+  max-height: 480px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.2) transparent;
+  padding-right: 4px;
 }
 
 .machine-card {
   border-radius: 18px;
-  padding: 16px;
+  padding: 16px 18px;
+  position: relative;
+  overflow: hidden;
+  transition: transform 150ms ease, box-shadow 150ms ease;
 }
+
+.machine-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.machine-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  border-radius: 18px 18px 0 0;
+}
+
+.machine-card.good::before { background: linear-gradient(90deg, var(--good), transparent); }
+.machine-card.warning::before { background: linear-gradient(90deg, var(--warn), transparent); }
+.machine-card.critical::before { background: linear-gradient(90deg, var(--bad), transparent); }
 
 .machine-card__header {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 12px;
   margin-bottom: 14px;
 }
 
 .machine-card__header h3 {
   margin: 0;
+  font-size: 0.98rem;
 }
 
 .machine-card__header span,
 .machine-card__metrics span {
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.82rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.08);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  white-space: nowrap;
 }
 
 .machine-card__metrics {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+  gap: 8px;
 }
 
 .machine-card__metrics div {
-  padding: 12px;
-  border-radius: 14px;
-  background: rgba(2, 6, 23, 0.28);
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.08);
 }
 
 .machine-card__metrics strong {
   display: block;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
+  font-size: 1.05rem;
+}
+
+.machine-card__metrics span {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.78rem;
 }
 
 .light {
