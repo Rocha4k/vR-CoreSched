@@ -2,6 +2,9 @@ using Warehouse.Backend.Contracts;
 
 namespace Warehouse.Backend.Infrastructure;
 
+/// <summary>Instantâneo leve usado pela deteção de máquinas offline, sem carregar telemetria bruta.</summary>
+public sealed record MachineHeartbeat(string MachineId, string Name, DateTimeOffset? LastSeen);
+
 public interface IWarehouseStore
 {
     Task<IReadOnlyList<MachineStateDto>> GetMachinesAsync(CancellationToken cancellationToken = default);
@@ -20,15 +23,19 @@ public interface IWarehouseStore
     Task<LightingDeviceDto?> UpsertLightingStateAsync(LightingStateDto lighting, CancellationToken cancellationToken = default);
     Task<AlertDto> AddAlertAsync(AlertDto alert, CancellationToken cancellationToken = default);
     Task<AlertDto?> AcknowledgeAlertAsync(string alertId, string acknowledgedBy, string? note, CancellationToken cancellationToken = default);
-    Task<ConsumptionAggregateDto> AddAggregateAsync(ConsumptionAggregateDto aggregate, CancellationToken cancellationToken = default);
     Task<MaintenanceRecordDto> AddMaintenanceRecordAsync(CreateMaintenanceRecordDto record, string createdBy, CancellationToken cancellationToken = default);
     Task<RuleDefinitionDto> UpsertRuleAsync(RuleDefinitionDto rule, CancellationToken cancellationToken = default);
     Task<AdminMachineDto> UpsertMachineAsync(AdminMachineDto machine, CancellationToken cancellationToken = default);
     Task<AdminZoneDto> UpsertZoneAsync(AdminZoneDto zone, CancellationToken cancellationToken = default);
     Task<FloorplanLayoutDto> UpsertFloorplanAsync(FloorplanLayoutDto layout, CancellationToken cancellationToken = default);
     Task<FloorplanPinDto> UpsertFloorplanPinAsync(FloorplanPinDto pin, CancellationToken cancellationToken = default);
-    Task<DateTimeOffset?> GetLastTelemetryAtAsync(string machineId, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<MachineTelemetryDto>> GetRecentTelemetryAsync(string machineId, int take, CancellationToken cancellationToken = default);
-    Task<IReadOnlyList<MachineTelemetryDto>> GetAllRecentTelemetryAsync(CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<MachineHeartbeat>> GetMachineHeartbeatsAsync(CancellationToken cancellationToken = default);
     Task SetMachineSeverityAsync(string machineId, string severity, CancellationToken cancellationToken = default);
+    Task SetMachineOfflineAsync(string machineId, CancellationToken cancellationToken = default);
+
+    /// <summary>Agrega consumo por máquina e por zona diretamente em SQL para a janela indicada.</summary>
+    Task<int> WriteConsumptionAggregatesAsync(DateTimeOffset periodStart, DateTimeOffset periodEnd, decimal euroPerKwh, CancellationToken cancellationToken = default);
+
+    /// <summary>Remove telemetria bruta anterior ao limite e devolve o número de linhas eliminadas.</summary>
+    Task<int> PurgeTelemetryOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default);
 }

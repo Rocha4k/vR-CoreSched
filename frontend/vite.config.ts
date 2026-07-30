@@ -1,11 +1,20 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
-  root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [react()],
   server: {
     port: 5173
+  },
+  build: {
+    target: 'es2022',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          react: ['react', 'react-dom'],
+          signalr: ['@microsoft/signalr']
+        }
+      }
+    }
   }
 });

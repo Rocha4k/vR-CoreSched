@@ -32,6 +32,7 @@ import type {
   Alert,
   ConsumptionReport,
   CurrentUser,
+  DashboardSnapshot,
   FloorplanLayout,
   FloorplanPin,
   FloorplanPoint,
@@ -49,6 +50,10 @@ const fallbackWorkspace = createFallbackWorkspace();
 const accessTokenStorageKey = 'vrcoresched.access';
 const refreshTokenStorageKey = 'vrcoresched.refresh';
 const legacyTokenStorageKey = 'vrcoresched.token';
+// O simulador publica telemetria ao segundo por máquina. Agrupar as mensagens
+// numa janela curta troca N re-renders por segundo por um só.
+const telemetryFlushMs = 500;
+const workspaceRefreshMs = 60000;
 
 type AppTab = 'dashboard' | 'reports' | 'profiles' | 'admin' | 'floorplan';
 
@@ -83,6 +88,8 @@ export default function App() {
     setAuthReady(true);
   }, []);
 
+  const currentRole = currentUser?.role;
+
   useEffect(() => {
     if (!accessToken) {
       setCurrentUser(null);
@@ -92,12 +99,18 @@ export default function App() {
       return;
     }
 
+    if (!currentRole) {
+      return;
+    }
+
     let mounted = true;
     const connection = createOperationsConnection(accessToken);
+    const telemetryBuffer = new Map<string, MachineTelemetry>();
+    let flushHandle: number | null = null;
 
     const refreshWorkspace = async () => {
       try {
-        const data = await fetchWorkspace(accessToken);
+        const data = await fetchWorkspace(accessToken, currentRole);
         if (mounted) {
           setWorkspace(data);
           setConnectionStatus('sincronizado');
@@ -109,41 +122,23 @@ export default function App() {
       }
     };
 
+    const flushTelemetry = () => {
+      flushHandle = null;
+      if (!mounted || telemetryBuffer.size === 0) return;
+
+      const batch = new Map(telemetryBuffer);
+      telemetryBuffer.clear();
+      setWorkspace(current => applyTelemetryBatch(current, batch));
+    };
+
     const handleTelemetry = (telemetry: MachineTelemetry) => {
       if (!mounted) return;
 
-      setWorkspace(current => ({
-        ...current,
-        dashboard: {
-          ...current.dashboard,
-          machines: current.dashboard.machines.map(machine => machine.machineId === telemetry.machineId
-            ? {
-                ...machine,
-                name: telemetry.name,
-                zone: telemetry.zone,
-                lastSeen: telemetry.timestamp,
-                temperatureC: telemetry.temperatureC,
-                vibrationMs2: telemetry.vibrationMs2,
-                rpm: telemetry.rpm,
-                energyKwh: telemetry.energyKwh,
-                isOnline: true
-              }
-            : machine)
-        },
-        machines: current.machines.map(machine => machine.machineId === telemetry.machineId
-          ? {
-              ...machine,
-              name: telemetry.name,
-              zoneId: telemetry.zone,
-              lastSeen: telemetry.timestamp,
-              temperatureC: telemetry.temperatureC,
-              vibrationMs2: telemetry.vibrationMs2,
-              rpm: telemetry.rpm,
-              energyKwh: telemetry.energyKwh,
-              isOnline: true
-            }
-          : machine)
-      }));
+      // Só interessa a leitura mais recente de cada máquina dentro da janela.
+      telemetryBuffer.set(telemetry.machineId, telemetry);
+      if (flushHandle === null) {
+        flushHandle = window.setTimeout(flushTelemetry, telemetryFlushMs);
+      }
     };
 
     const handleAlert = (alert: Alert) => {
@@ -201,14 +196,17 @@ export default function App() {
       .catch(() => setConnectionStatus('sem SignalR, a usar fallback local'));
 
     void refreshWorkspace();
-    const refreshInterval = window.setInterval(() => { void refreshWorkspace(); }, 60000);
+    const refreshInterval = window.setInterval(() => { void refreshWorkspace(); }, workspaceRefreshMs);
 
     return () => {
       mounted = false;
       window.clearInterval(refreshInterval);
+      if (flushHandle !== null) {
+        window.clearTimeout(flushHandle);
+      }
       void connection.stop();
     };
-  }, [accessToken]);
+  }, [accessToken, currentRole]);
 
   useEffect(() => {
     if (!accessToken) {
@@ -340,7 +338,7 @@ export default function App() {
 
   const refreshWorkspace = async () => {
     if (!accessToken) return;
-    const data = await fetchWorkspace(accessToken);
+    const data = await fetchWorkspace(accessToken, currentRole);
     setWorkspace(data);
   };
 
@@ -662,6 +660,50 @@ function createFallbackWorkspace(): WorkspaceSnapshot {
       ]
     }
   };
+}
+
+function applyTelemetryBatch(current: WorkspaceSnapshot, batch: Map<string, MachineTelemetry>): WorkspaceSnapshot {
+  let changed = false;
+
+  const dashboardMachines = current.dashboard.machines.map(machine => {
+    const telemetry = batch.get(machine.machineId);
+    if (!telemetry) return machine;
+
+    changed = true;
+    return {
+      ...machine,
+      name: telemetry.name,
+      zone: telemetry.zone,
+      lastSeen: telemetry.timestamp,
+      temperatureC: telemetry.temperatureC,
+      vibrationMs2: telemetry.vibrationMs2,
+      rpm: telemetry.rpm,
+      energyKwh: telemetry.energyKwh,
+      isOnline: true
+    };
+  });
+
+  const machines = current.machines.map(machine => {
+    const telemetry = batch.get(machine.machineId);
+    if (!telemetry) return machine;
+
+    return {
+      ...machine,
+      name: telemetry.name,
+      zoneId: telemetry.zone,
+      lastSeen: telemetry.timestamp,
+      temperatureC: telemetry.temperatureC,
+      vibrationMs2: telemetry.vibrationMs2,
+      rpm: telemetry.rpm,
+      energyKwh: telemetry.energyKwh,
+      isOnline: true
+    };
+  });
+
+  // Telemetria de uma máquina desconhecida não deve forçar um re-render.
+  if (!changed) return current;
+
+  return { ...current, dashboard: { ...current.dashboard, machines: dashboardMachines }, machines };
 }
 
 function parseBoundaryPoints(json: string): FloorplanPoint[] {

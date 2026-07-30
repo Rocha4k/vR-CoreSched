@@ -44,6 +44,8 @@ public sealed class WarehouseDbContext : DbContext
             entity.ToTable("telemetry_events");
             entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.MachineId, item.Timestamp });
+            // Serve a agregação por janela e a limpeza por retenção.
+            entity.HasIndex(item => item.Timestamp);
         });
 
         modelBuilder.Entity<AlertEntity>(entity =>
@@ -51,6 +53,8 @@ public sealed class WarehouseDbContext : DbContext
             entity.ToTable("alerts");
             entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.MachineId, item.StartTime });
+            // Serve o "últimos N alertas" do dashboard.
+            entity.HasIndex(item => item.StartTime);
             entity.Property(item => item.AcknowledgedBy).HasMaxLength(120);
             entity.Property(item => item.AcknowledgementNote).HasMaxLength(500);
         });
@@ -60,6 +64,8 @@ public sealed class WarehouseDbContext : DbContext
             entity.ToTable("consumption_aggregates");
             entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.ScopeType, item.ScopeId, item.PeriodStart });
+            // Serve os relatórios por mês e o snapshot do dashboard.
+            entity.HasIndex(item => item.PeriodStart);
         });
 
         modelBuilder.Entity<RuleDefinitionEntity>(entity =>
@@ -108,6 +114,8 @@ public sealed class WarehouseDbContext : DbContext
             entity.Property(item => item.CreatedBy).HasMaxLength(120).IsRequired();
             entity.Property(item => item.ClosedBy).HasMaxLength(120);
             entity.HasIndex(item => new { item.MachineId, item.CreatedAt });
+            entity.HasIndex(item => item.CreatedAt);
+            entity.HasIndex(item => item.AlertId);
         });
 
         modelBuilder.Entity<AppUserEntity>(entity =>

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Options;
 using Warehouse.Backend.Contracts;
 using Warehouse.Backend.Infrastructure;
 
@@ -6,115 +7,192 @@ namespace Warehouse.Backend.Services;
 
 public sealed class RuleEngine : IRuleEngine
 {
-    private readonly IWarehouseStore _store;
-    private readonly ConcurrentDictionary<string, RuleWindow> _windows = new();
+    private const string DefaultSeverity = "Info";
+    private const string OfflineRuleCode = "OFFLINE_001";
 
-    public RuleEngine(IWarehouseStore store)
+    private readonly IWarehouseStore _store;
+    private readonly WarehouseOptions _options;
+    private readonly ILogger<RuleEngine> _logger;
+    private readonly ConcurrentDictionary<string, RuleWindow> _windows = new();
+    private readonly ConcurrentDictionary<string, string> _lastSeverity = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, DateTimeOffset> _lastOfflineAlert = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _rulesLock = new(1, 1);
+
+    private IReadOnlyList<RuleDefinitionDto> _rules = [];
+    private DateTimeOffset _rulesLoadedAt = DateTimeOffset.MinValue;
+
+    public RuleEngine(IWarehouseStore store, IOptions<WarehouseOptions> options, ILogger<RuleEngine> logger)
     {
         _store = store;
+        _options = options.Value;
+        _logger = logger;
     }
+
+    public void InvalidateRules() => _rulesLoadedAt = DateTimeOffset.MinValue;
 
     public async Task<AlertDto?> EvaluateTelemetryAsync(MachineTelemetryDto telemetry, CancellationToken cancellationToken = default)
     {
-        var rules = await _store.GetRulesAsync(cancellationToken);
+        var rules = await GetRulesAsync(cancellationToken);
         var now = telemetry.Timestamp;
+        AlertDto? raised = null;
+        var severity = DefaultSeverity;
 
-        foreach (var rule in rules.Where(item => item.IsEnabled &&
-                                                 ((item.TargetType == "Machine" && string.Equals(item.TargetId, telemetry.MachineId, StringComparison.OrdinalIgnoreCase)) ||
-                                                  (item.TargetType == "Zone" && string.Equals(item.TargetId, telemetry.Zone, StringComparison.OrdinalIgnoreCase)))))
+        foreach (var rule in rules)
         {
-            var windowKey = $"{telemetry.MachineId}:{rule.Code}";
-            var window = _windows.GetOrAdd(windowKey, _ => new RuleWindow());
-
-            if (telemetry.TemperatureC > rule.TemperatureThreshold && telemetry.VibrationMs2 > rule.VibrationThreshold)
-            {
-                window.MarkHot(now);
-                if (window.IsCriticalFor(TimeSpan.FromSeconds(rule.DurationSeconds), now) && window.CanAlert(now, rule.CooldownSeconds))
-                {
-                    var alert = new AlertDto(
-                        Guid.NewGuid().ToString("N"),
-                        telemetry.MachineId,
-                        rule.Severity,
-                        rule.Code,
-                        $"{telemetry.Name} ultrapassou os limiares da regra {rule.Name}.",
-                        now,
-                        null,
-                        false);
-
-                    window.RegisterAlert(now);
-                    await _store.SetMachineSeverityAsync(telemetry.MachineId, rule.Severity, cancellationToken);
-                    return await _store.AddAlertAsync(alert, cancellationToken);
-                }
-            }
-
-            window.ResetHot();
-        }
-
-        await _store.SetMachineSeverityAsync(telemetry.MachineId, "Info", cancellationToken);
-        return null;
-    }
-
-    public async Task<IReadOnlyList<AlertDto>> EvaluateOfflineMachinesAsync(CancellationToken cancellationToken = default)
-    {
-        var machines = await _store.GetMachinesAsync(cancellationToken);
-        var alerts = new List<AlertDto>();
-
-        foreach (var machine in machines)
-        {
-            var lastSeen = await _store.GetLastTelemetryAtAsync(machine.MachineId, cancellationToken);
-            if (lastSeen is null)
+            if (!Matches(rule, telemetry))
             {
                 continue;
             }
 
-            if (DateTimeOffset.UtcNow - lastSeen > TimeSpan.FromSeconds(10))
+            var window = _windows.GetOrAdd($"{telemetry.MachineId}:{rule.Code}", _ => new RuleWindow());
+            var breaching = telemetry.TemperatureC > rule.TemperatureThreshold && telemetry.VibrationMs2 > rule.VibrationThreshold;
+
+            if (!breaching)
             {
-                var alert = new AlertDto(
+                // Só aqui se fecha a janela. Reiniciá-la a cada mensagem impedia
+                // que DurationSeconds fosse alguma vez atingido.
+                window.Reset();
+                continue;
+            }
+
+            severity = rule.Severity;
+            window.MarkBreaching(now);
+
+            if (raised is not null || !window.HasBreachedFor(TimeSpan.FromSeconds(rule.DurationSeconds), now) || !window.CanAlert(now, rule.CooldownSeconds))
+            {
+                continue;
+            }
+
+            window.RegisterAlert(now);
+            raised = await _store.AddAlertAsync(
+                new AlertDto(
+                    Guid.NewGuid().ToString("N"),
+                    telemetry.MachineId,
+                    rule.Severity,
+                    rule.Code,
+                    $"{telemetry.Name} ultrapassou os limiares da regra {rule.Name}.",
+                    now,
+                    null,
+                    false),
+                cancellationToken);
+        }
+
+        await ApplySeverityAsync(telemetry.MachineId, severity, cancellationToken);
+        return raised;
+    }
+
+    public async Task<IReadOnlyList<AlertDto>> EvaluateOfflineMachinesAsync(CancellationToken cancellationToken = default)
+    {
+        var threshold = TimeSpan.FromSeconds(Math.Max(1, _options.OfflineThresholdSeconds));
+        var cooldown = TimeSpan.FromSeconds(Math.Max(1, _options.AlertCooldownSeconds));
+        var now = DateTimeOffset.UtcNow;
+
+        // Uma única query em vez de uma leitura de telemetria por máquina.
+        var heartbeats = await _store.GetMachineHeartbeatsAsync(cancellationToken);
+        var alerts = new List<AlertDto>();
+
+        foreach (var machine in heartbeats)
+        {
+            if (machine.LastSeen is not { } lastSeen || now - lastSeen <= threshold)
+            {
+                _lastOfflineAlert.TryRemove(machine.MachineId, out _);
+                continue;
+            }
+
+            await _store.SetMachineOfflineAsync(machine.MachineId, cancellationToken);
+            await ApplySeverityAsync(machine.MachineId, "Warning", cancellationToken);
+
+            // Sem cooldown nascia um alerta novo em cada varrimento, enchendo a tabela.
+            if (_lastOfflineAlert.TryGetValue(machine.MachineId, out var lastAlert) && now - lastAlert <= cooldown)
+            {
+                continue;
+            }
+
+            _lastOfflineAlert[machine.MachineId] = now;
+            alerts.Add(await _store.AddAlertAsync(
+                new AlertDto(
                     Guid.NewGuid().ToString("N"),
                     machine.MachineId,
                     "Warning",
-                    "OFFLINE_001",
-                    $"{machine.Name} não envia telemetria há mais de 10 segundos.",
-                    DateTimeOffset.UtcNow,
+                    OfflineRuleCode,
+                    $"{machine.Name} não envia telemetria há mais de {threshold.TotalSeconds:0} segundos.",
+                    now,
                     null,
-                    false);
-
-                alerts.Add(await _store.AddAlertAsync(alert, cancellationToken));
-                await _store.SetMachineSeverityAsync(machine.MachineId, "Warning", cancellationToken);
-            }
+                    false),
+                cancellationToken));
         }
 
         return alerts;
     }
 
+    private static bool Matches(RuleDefinitionDto rule, MachineTelemetryDto telemetry)
+    {
+        if (!rule.IsEnabled)
+        {
+            return false;
+        }
+
+        return rule.TargetType switch
+        {
+            "Machine" => string.Equals(rule.TargetId, telemetry.MachineId, StringComparison.OrdinalIgnoreCase),
+            "Zone" => string.Equals(rule.TargetId, telemetry.Zone, StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+    }
+
+    private async Task ApplySeverityAsync(string machineId, string severity, CancellationToken cancellationToken)
+    {
+        // O caminho quente recebe uma mensagem por máquina por segundo: só se escreve
+        // na base de dados quando a severidade muda de facto.
+        if (_lastSeverity.TryGetValue(machineId, out var current) && string.Equals(current, severity, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _lastSeverity[machineId] = severity;
+        await _store.SetMachineSeverityAsync(machineId, severity, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<RuleDefinitionDto>> GetRulesAsync(CancellationToken cancellationToken)
+    {
+        var ttl = TimeSpan.FromSeconds(Math.Max(1, _options.RuleCacheSeconds));
+        if (DateTimeOffset.UtcNow - _rulesLoadedAt < ttl)
+        {
+            return _rules;
+        }
+
+        await _rulesLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (DateTimeOffset.UtcNow - _rulesLoadedAt < ttl)
+            {
+                return _rules;
+            }
+
+            _rules = await _store.GetRulesAsync(cancellationToken);
+            _rulesLoadedAt = DateTimeOffset.UtcNow;
+            _logger.LogDebug("Cache de regras recarregada com {Count} regras.", _rules.Count);
+            return _rules;
+        }
+        finally
+        {
+            _rulesLock.Release();
+        }
+    }
+
     private sealed class RuleWindow
     {
-        private DateTimeOffset? _hotSince;
+        private DateTimeOffset? _breachingSince;
         private DateTimeOffset? _lastAlertAt;
 
-        public void MarkHot(DateTimeOffset timestamp)
-        {
-            _hotSince ??= timestamp;
-        }
+        public void MarkBreaching(DateTimeOffset timestamp) => _breachingSince ??= timestamp;
 
-        public void ResetHot()
-        {
-            _hotSince = null;
-        }
+        public void Reset() => _breachingSince = null;
 
-        public bool IsCriticalFor(TimeSpan duration, DateTimeOffset now)
-        {
-            return _hotSince is not null && now - _hotSince >= duration;
-        }
+        public bool HasBreachedFor(TimeSpan duration, DateTimeOffset now) => _breachingSince is { } since && now - since >= duration;
 
-        public bool CanAlert(DateTimeOffset now, int cooldownSeconds)
-        {
-            return _lastAlertAt is null || now - _lastAlertAt > TimeSpan.FromSeconds(cooldownSeconds);
-        }
+        public bool CanAlert(DateTimeOffset now, int cooldownSeconds) => _lastAlertAt is not { } last || now - last > TimeSpan.FromSeconds(cooldownSeconds);
 
-        public void RegisterAlert(DateTimeOffset now)
-        {
-            _lastAlertAt = now;
-        }
+        public void RegisterAlert(DateTimeOffset now) => _lastAlertAt = now;
     }
 }

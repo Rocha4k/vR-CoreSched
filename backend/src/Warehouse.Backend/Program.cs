@@ -1,11 +1,16 @@
-using System.IdentityModel.Tokens.Jwt;
+using System.IO.Compression;
 using System.Security.Claims;
 using System.Text;
-using Microsoft.AspNetCore.SignalR;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Serilog;
 using Warehouse.Backend.Contracts;
 using Warehouse.Backend.Data;
 using Warehouse.Backend.Hubs;
@@ -15,6 +20,11 @@ using Warehouse.Backend.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Host.UseSerilog((context, configuration) => configuration
+    .ReadFrom.Configuration(context.Configuration)
+    .Enrich.FromLogContext()
+    .WriteTo.Console());
+
 var connectionString = builder.Configuration.GetConnectionString("WarehouseDb")
     ?? builder.Configuration["Warehouse:ConnectionString"]
     ?? "Host=localhost;Port=5432;Database=vrcoresched;Username=vruser;Password=vrpassword";
@@ -22,12 +32,26 @@ var connectionString = builder.Configuration.GetConnectionString("WarehouseDb")
 builder.Services.AddDbContextFactory<WarehouseDbContext>(options =>
     options.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
 
+builder.Services.Configure<WarehouseOptions>(builder.Configuration.GetSection(WarehouseOptions.SectionName));
+var warehouseOptions = builder.Configuration.GetSection(WarehouseOptions.SectionName).Get<WarehouseOptions>() ?? new WarehouseOptions();
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<DemoIdentityService>();
 builder.Services.AddSingleton<IWarehouseStore, PostgresWarehouseStore>();
 builder.Services.AddSingleton<IRuleEngine, RuleEngine>();
+
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+    options.Providers.Add<BrotliCompressionProvider>();
+    options.Providers.Add<GzipCompressionProvider>();
+    options.MimeTypes = ["application/json", "text/csv", "text/plain"];
+});
+builder.Services.Configure<BrotliCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+builder.Services.Configure<GzipCompressionProviderOptions>(options => options.Level = CompressionLevel.Fastest);
+
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy("OperatorOrAbove", policy => policy.RequireRole("Operator", "Supervisor", "Admin"));
@@ -36,6 +60,19 @@ builder.Services.AddAuthorization(options =>
 });
 
 var authOptions = builder.Configuration.GetSection(WarehouseAuthOptions.SectionName).Get<WarehouseAuthOptions>() ?? new WarehouseAuthOptions();
+
+// HMAC-SHA256 exige pelo menos 256 bits de chave: falhar no arranque é melhor
+// do que falhar em cada login.
+if (Encoding.UTF8.GetByteCount(authOptions.SigningKey) < 32)
+{
+    throw new InvalidOperationException($"{WarehouseAuthOptions.SectionName}:SigningKey tem de ter pelo menos 32 bytes.");
+}
+
+if (!builder.Environment.IsDevelopment() && authOptions.SigningKey.Contains("demo", StringComparison.OrdinalIgnoreCase))
+{
+    throw new InvalidOperationException($"Configure {WarehouseAuthOptions.SectionName}:SigningKey fora de desenvolvimento.");
+}
+
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(authOptions.SigningKey));
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -72,22 +109,44 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("frontend", policy =>
     {
-        policy.WithOrigins("http://localhost:5173")
+        policy.WithOrigins(warehouseOptions.AllowedOrigins)
             .AllowAnyHeader()
             .AllowAnyMethod()
             .AllowCredentials();
     });
 });
-builder.Services.AddHostedService<MqttSubscriptionWorker>();
+
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // Rotas de comando (luzes, alertas, manutenção, configuração) por utilizador.
+    options.AddPolicy("commands", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+
+    // Login e refresh por IP, para travar tentativas em força bruta.
+    options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
+        context.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
+        _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
+});
+
+// Registado como singleton para que o health check possa observar o estado da ligação.
+builder.Services.AddSingleton<MqttSubscriptionWorker>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<MqttSubscriptionWorker>());
 builder.Services.AddHostedService<OfflineMonitoringWorker>();
 builder.Services.AddHostedService<ConsumptionAggregationWorker>();
-builder.Services.Configure<WarehouseOptions>(builder.Configuration.GetSection(WarehouseOptions.SectionName));
+
+builder.Services.AddHealthChecks()
+    .AddCheck<DatabaseHealthCheck>("database", tags: ["ready"])
+    .AddCheck<MqttHealthCheck>("mqtt", tags: ["ready"]);
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
+await using (var scope = app.Services.CreateAsyncScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<WarehouseDbContext>();
+    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<WarehouseDbContext>>();
+    await using var db = await factory.CreateDbContextAsync();
     await db.Database.MigrateAsync();
     await WarehouseDbSeeder.SeedAsync(db);
 }
@@ -98,22 +157,27 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+app.UseSerilogRequestLogging();
+app.UseResponseCompression();
 app.UseCors("frontend");
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapHealthChecks("/health", new HealthCheckOptions { Predicate = _ => false }).AllowAnonymous();
+app.MapHealthChecks("/health/ready", new HealthCheckOptions { Predicate = check => check.Tags.Contains("ready") }).AllowAnonymous();
+
 app.MapPost("/api/auth/login", async (LoginRequestDto request, DemoIdentityService identityService, CancellationToken ct) =>
 {
     var result = await identityService.LoginAsync(request, ct);
     return result is null ? Results.Unauthorized() : Results.Ok(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("auth");
 
 app.MapPost("/api/auth/refresh", async (RefreshRequestDto request, DemoIdentityService identityService, CancellationToken ct) =>
 {
     var result = await identityService.RefreshAsync(request, ct);
     return result is null ? Results.Unauthorized() : Results.Ok(result);
-}).AllowAnonymous();
+}).AllowAnonymous().RequireRateLimiting("auth");
 
 app.MapGet("/api/auth/me", [Authorize] async (ClaimsPrincipal user, DemoIdentityService identityService, CancellationToken ct) =>
 {
@@ -137,7 +201,7 @@ app.MapPut("/api/users/me", [Authorize] async (ClaimsPrincipal user, UpdateProfi
 
     var updated = await identityService.UpdateProfileAsync(username, request, ct);
     return updated is null ? Results.BadRequest(new { message = "Nao foi possivel atualizar o perfil." }) : Results.Ok(updated);
-});
+}).RequireRateLimiting("commands");
 
 app.MapGet("/api/users", [Authorize(Policy = "AdminOnly")] async (DemoIdentityService identityService, CancellationToken ct) => Results.Ok(await identityService.GetUsersAsync(ct)));
 
@@ -145,7 +209,7 @@ app.MapPost("/api/users", [Authorize(Policy = "AdminOnly")] async (UpsertUserReq
 {
     var saved = await identityService.UpsertUserAsync(request, ct);
     return saved is null ? Results.BadRequest() : Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPut("/api/users/{username}", [Authorize(Policy = "AdminOnly")] async (string username, UpsertUserRequestDto request, DemoIdentityService identityService, CancellationToken ct) =>
 {
@@ -156,36 +220,31 @@ app.MapPut("/api/users/{username}", [Authorize(Policy = "AdminOnly")] async (str
 
     var saved = await identityService.UpsertUserAsync(request, ct);
     return saved is null ? Results.BadRequest() : Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
-app.MapGet("/api/dashboard", [Authorize] async (IWarehouseStore store) => Results.Ok(await store.GetSnapshotAsync()));
-app.MapGet("/api/machines", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store) => Results.Ok(await store.GetMachinesAsync()));
-app.MapGet("/api/alerts", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store) => Results.Ok(await store.GetAlertsAsync()));
-app.MapGet("/api/lighting", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store) => Results.Ok(await store.GetLightingAsync()));
-app.MapGet("/api/rules", [Authorize(Policy = "AdminOnly")] async (IWarehouseStore store) => Results.Ok(await store.GetRulesAsync()));
-app.MapGet("/api/zones", [Authorize(Policy = "SupervisorOrAdmin")] async (IWarehouseStore store) => Results.Ok(await store.GetZonesAsync()));
-app.MapGet("/api/admin/machines", [Authorize(Policy = "SupervisorOrAdmin")] async (IWarehouseStore store) => Results.Ok(await store.GetAdminMachinesAsync()));
-app.MapGet("/api/floorplan", [Authorize(Policy = "SupervisorOrAdmin")] async (IWarehouseStore store) => Results.Ok(await store.GetFloorplanAsync()));
-app.MapGet("/api/maintenance", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store) => Results.Ok(await store.GetMaintenanceHistoryAsync()));
+app.MapGet("/api/dashboard", [Authorize] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetSnapshotAsync(ct)));
+app.MapGet("/api/machines", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetMachinesAsync(ct)));
+app.MapGet("/api/alerts", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetAlertsAsync(ct)));
+app.MapGet("/api/lighting", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetLightingAsync(ct)));
+app.MapGet("/api/rules", [Authorize(Policy = "AdminOnly")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetRulesAsync(ct)));
+app.MapGet("/api/zones", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetZonesAsync(ct)));
+app.MapGet("/api/admin/machines", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetAdminMachinesAsync(ct)));
+app.MapGet("/api/floorplan", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetFloorplanAsync(ct)));
+app.MapGet("/api/maintenance", [Authorize(Policy = "OperatorOrAbove")] async (IWarehouseStore store, CancellationToken ct) => Results.Ok(await store.GetMaintenanceHistoryAsync(ct)));
 
 app.MapGet("/api/reports/consumption", [Authorize(Policy = "OperatorOrAbove")] async (string month, string? machineId, string? zoneId, IWarehouseStore store, CancellationToken ct) =>
-{
-    var report = await store.GetConsumptionReportAsync(month, machineId, zoneId, ct);
-    return Results.Ok(report);
-});
+    Results.Ok(await store.GetConsumptionReportAsync(month, machineId, zoneId, ct)));
 
 app.MapGet("/api/reports/consumption.csv", [Authorize(Policy = "OperatorOrAbove")] async (string month, string? machineId, string? zoneId, IWarehouseStore store, CancellationToken ct) =>
 {
     var report = await store.GetConsumptionReportAsync(month, machineId, zoneId, ct);
-    var content = ReportExportService.BuildCsv(report);
-    return Results.File(content, "text/csv", $"consumption-report-{month}.csv");
+    return Results.File(ReportExportService.BuildCsv(report), "text/csv", $"consumption-report-{month}.csv");
 });
 
 app.MapGet("/api/reports/consumption.pdf", [Authorize(Policy = "OperatorOrAbove")] async (string month, string? machineId, string? zoneId, IWarehouseStore store, CancellationToken ct) =>
 {
     var report = await store.GetConsumptionReportAsync(month, machineId, zoneId, ct);
-    var content = ReportExportService.BuildPdf(report);
-    return Results.File(content, "application/pdf", $"consumption-report-{month}.pdf");
+    return Results.File(ReportExportService.BuildPdf(report), "application/pdf", $"consumption-report-{month}.pdf");
 });
 
 app.MapPost("/api/lighting/{deviceId}/toggle", [Authorize(Policy = "OperatorOrAbove")] async (string deviceId, IWarehouseStore store, IHubContext<OperationsHub> hub, ClaimsPrincipal user, CancellationToken ct) =>
@@ -198,7 +257,7 @@ app.MapPost("/api/lighting/{deviceId}/toggle", [Authorize(Policy = "OperatorOrAb
 
     await hub.Clients.All.SendAsync("lighting.updated", lighting, ct);
     return Results.Ok(lighting);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPost("/api/alerts/{alertId}/acknowledge", [Authorize(Policy = "OperatorOrAbove")] async (string alertId, AcknowledgeAlertRequestDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, ClaimsPrincipal user, CancellationToken ct) =>
 {
@@ -211,16 +270,16 @@ app.MapPost("/api/alerts/{alertId}/acknowledge", [Authorize(Policy = "OperatorOr
     await hub.Clients.All.SendAsync("alert.updated", updated, ct);
     await hub.Clients.All.SendAsync("maintenance.updated", await store.GetMaintenanceHistoryAsync(ct), ct);
     return Results.Ok(updated);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPost("/api/maintenance", [Authorize(Policy = "SupervisorOrAdmin")] async (CreateMaintenanceRecordDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, ClaimsPrincipal user, CancellationToken ct) =>
 {
     var saved = await store.AddMaintenanceRecordAsync(dto, user.Identity?.Name ?? "unknown", ct);
     await hub.Clients.All.SendAsync("maintenance.updated", await store.GetMaintenanceHistoryAsync(ct), ct);
     return Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
-app.MapPut("/api/rules/{ruleId}", [Authorize(Policy = "AdminOnly")] async (string ruleId, RuleDefinitionDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, CancellationToken ct) =>
+app.MapPut("/api/rules/{ruleId}", [Authorize(Policy = "AdminOnly")] async (string ruleId, RuleDefinitionDto dto, IWarehouseStore store, IRuleEngine ruleEngine, IHubContext<OperationsHub> hub, CancellationToken ct) =>
 {
     if (!string.Equals(ruleId, dto.Id, StringComparison.OrdinalIgnoreCase))
     {
@@ -228,9 +287,10 @@ app.MapPut("/api/rules/{ruleId}", [Authorize(Policy = "AdminOnly")] async (strin
     }
 
     var saved = await store.UpsertRuleAsync(dto, ct);
+    ruleEngine.InvalidateRules();
     await hub.Clients.All.SendAsync("rules.updated", saved, ct);
     return Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPut("/api/admin/machines/{machineId}", [Authorize(Policy = "SupervisorOrAdmin")] async (string machineId, AdminMachineDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, CancellationToken ct) =>
 {
@@ -242,7 +302,7 @@ app.MapPut("/api/admin/machines/{machineId}", [Authorize(Policy = "SupervisorOrA
     var saved = await store.UpsertMachineAsync(dto, ct);
     await hub.Clients.All.SendAsync("machines.updated", saved, ct);
     return Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPut("/api/zones/{zoneId}", [Authorize(Policy = "SupervisorOrAdmin")] async (string zoneId, AdminZoneDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, CancellationToken ct) =>
 {
@@ -254,14 +314,14 @@ app.MapPut("/api/zones/{zoneId}", [Authorize(Policy = "SupervisorOrAdmin")] asyn
     var saved = await store.UpsertZoneAsync(dto, ct);
     await hub.Clients.All.SendAsync("zones.updated", saved, ct);
     return Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPut("/api/floorplan", [Authorize(Policy = "SupervisorOrAdmin")] async (FloorplanLayoutDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, CancellationToken ct) =>
 {
     var saved = await store.UpsertFloorplanAsync(dto, ct);
     await hub.Clients.All.SendAsync("floorplan.updated", saved, ct);
     return Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
 app.MapPut("/api/floorplan/pins/{pinId}", [Authorize(Policy = "SupervisorOrAdmin")] async (int pinId, FloorplanPinDto dto, IWarehouseStore store, IHubContext<OperationsHub> hub, CancellationToken ct) =>
 {
@@ -273,7 +333,7 @@ app.MapPut("/api/floorplan/pins/{pinId}", [Authorize(Policy = "SupervisorOrAdmin
     var saved = await store.UpsertFloorplanPinAsync(dto, ct);
     await hub.Clients.All.SendAsync("floorplan.updated", saved, ct);
     return Results.Ok(saved);
-});
+}).RequireRateLimiting("commands");
 
 app.MapHub<OperationsHub>("/hubs/operations").RequireAuthorization();
 

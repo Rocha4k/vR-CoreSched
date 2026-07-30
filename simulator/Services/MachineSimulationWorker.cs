@@ -10,38 +10,55 @@ namespace Warehouse.Simulator.Services;
 public sealed class MachineSimulationWorker : BackgroundService
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+    private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(30);
+
+    // Probabilidade, por ciclo, de uma lâmpada mudar de estado sozinha.
+    private const int LightingChangeChancePercent = 2;
+
     private readonly SimulatorOptions _options;
+    private readonly ILogger<MachineSimulationWorker> _logger;
     private readonly Random _random = new();
     private readonly IReadOnlyList<MachineProfile> _machines;
-    private readonly IReadOnlyList<LightingState> _lighting;
+    private readonly List<LightingState> _lighting;
+    private bool _lightingPublished;
 
-    public MachineSimulationWorker(IOptions<SimulatorOptions> options)
+    public MachineSimulationWorker(IOptions<SimulatorOptions> options, ILogger<MachineSimulationWorker> logger)
     {
         _options = options.Value;
-        _machines = new[]
-        {
-            new MachineProfile("press-01", "Prensa Hidráulica", "zona-producao"),
-            new MachineProfile("line-01", "Linha de Montagem", "linha-montagem"),
-            new MachineProfile("belt-01", "Tapete Rolante", "corredor-a")
-        };
-        _lighting = new[]
-        {
-            new LightingState("light-carga", "zona-carga", "Luz da Zona de Carga", true, DateTimeOffset.UtcNow, "seed"),
-            new LightingState("light-corridor-a", "corredor-a", "Luz do Corredor A", true, DateTimeOffset.UtcNow, "seed"),
-            new LightingState("light-corridor-b", "corredor-b", "Luz do Corredor B", true, DateTimeOffset.UtcNow, "seed"),
-            new LightingState("light-office", "escritorios", "Luz dos Escritórios", true, DateTimeOffset.UtcNow, "seed")
-        };
+        _logger = logger;
+
+        MachineProfile[] machineCatalog =
+        [
+            new("press-01", "Prensa Hidráulica", "zona-producao"),
+            new("line-01", "Linha de Montagem", "linha-montagem"),
+            new("belt-01", "Tapete Rolante", "corredor-a")
+        ];
+
+        LightingState[] lightingCatalog =
+        [
+            new("light-carga", "zona-carga", "Luz da Zona de Carga", true, DateTimeOffset.UtcNow, "seed"),
+            new("light-corridor-a", "corredor-a", "Luz do Corredor A", true, DateTimeOffset.UtcNow, "seed"),
+            new("light-corridor-b", "corredor-b", "Luz do Corredor B", true, DateTimeOffset.UtcNow, "seed"),
+            new("light-office", "escritorios", "Luz dos Escritórios", true, DateTimeOffset.UtcNow, "seed")
+        ];
+
+        // MachineCount e LightingCount estavam a ser ignorados pela configuração.
+        _machines = machineCatalog.Take(Math.Clamp(_options.MachineCount, 1, machineCatalog.Length)).ToArray();
+        _lighting = lightingCatalog.Take(Math.Clamp(_options.LightingCount, 0, lightingCatalog.Length)).ToList();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var factory = new MqttFactory();
-        var client = factory.CreateMqttClient();
+        using var client = new MqttFactory().CreateMqttClient();
 
         var options = new MqttClientOptionsBuilder()
             .WithTcpServer(_options.MqttHost, _options.MqttPort)
+            .WithClientId($"vrcoresched-simulator-{Environment.MachineName}")
             .WithCleanSession()
             .Build();
+
+        var interval = TimeSpan.FromSeconds(Math.Max(1, _options.PublishIntervalSeconds));
+        var backoff = TimeSpan.FromSeconds(1);
 
         while (!stoppingToken.IsCancellationRequested)
         {
@@ -50,16 +67,25 @@ public sealed class MachineSimulationWorker : BackgroundService
                 if (!client.IsConnected)
                 {
                     await client.ConnectAsync(options, stoppingToken);
+                    _logger.LogInformation("Simulador ligado ao broker MQTT {Host}:{Port}.", _options.MqttHost, _options.MqttPort);
+                    backoff = TimeSpan.FromSeconds(1);
                 }
 
                 await PublishTelemetryAsync(client, stoppingToken);
                 await PublishLightingAsync(client, stoppingToken);
+                await Task.Delay(interval, stoppingToken);
             }
-            catch
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
+                break;
             }
-
-            await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, _options.PublishIntervalSeconds)), stoppingToken);
+            catch (Exception exception)
+            {
+                // O catch vazio anterior escondia falhas de ligação ao broker.
+                _logger.LogWarning(exception, "Falha a publicar no broker MQTT. Nova tentativa em {Delay}.", backoff);
+                await Task.Delay(backoff, stoppingToken);
+                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, MaxBackoff.Ticks));
+            }
         }
     }
 
@@ -78,30 +104,46 @@ public sealed class MachineSimulationWorker : BackgroundService
                 GenerateEnergy(machine.MachineId),
                 "simulator");
 
-            var topic = $"warehouse/machines/{machine.MachineId}/telemetry";
-            var payload = JsonSerializer.SerializeToUtf8Bytes(telemetry, JsonOptions);
-            var message = new MqttApplicationMessageBuilder().WithTopic(topic).WithPayload(payload).WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build();
-            await client.PublishAsync(message, cancellationToken);
+            await PublishAsync(client, $"warehouse/machines/{machine.MachineId}/telemetry", telemetry, cancellationToken);
         }
     }
 
     private async Task PublishLightingAsync(IMqttClient client, CancellationToken cancellationToken)
     {
-        foreach (var item in _lighting)
+        // Republicar um estado aleatório a cada segundo desfazia os comandos do
+        // operador na UI. Agora só se publica quando o estado simulado muda.
+        for (var index = 0; index < _lighting.Count; index++)
         {
-            var shouldBeOn = _random.Next(0, 100) > 10;
-            var state = item with
+            var current = _lighting[index];
+            var toggles = _random.Next(0, 100) < LightingChangeChancePercent;
+            if (!toggles && _lightingPublished)
             {
-                IsOn = shouldBeOn,
+                continue;
+            }
+
+            var next = current with
+            {
+                IsOn = toggles ? !current.IsOn : current.IsOn,
                 Timestamp = DateTimeOffset.UtcNow,
                 Source = "simulator"
             };
 
-            var topic = $"warehouse/lighting/{item.DeviceId}/state";
-            var payload = JsonSerializer.SerializeToUtf8Bytes(state, JsonOptions);
-            var message = new MqttApplicationMessageBuilder().WithTopic(topic).WithPayload(payload).WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce).Build();
-            await client.PublishAsync(message, cancellationToken);
+            _lighting[index] = next;
+            await PublishAsync(client, $"warehouse/lighting/{next.DeviceId}/state", next, cancellationToken);
         }
+
+        _lightingPublished = true;
+    }
+
+    private static Task PublishAsync<T>(IMqttClient client, string topic, T payload, CancellationToken cancellationToken)
+    {
+        var message = new MqttApplicationMessageBuilder()
+            .WithTopic(topic)
+            .WithPayload(JsonSerializer.SerializeToUtf8Bytes(payload, JsonOptions))
+            .WithQualityOfServiceLevel(MqttQualityOfServiceLevel.AtLeastOnce)
+            .Build();
+
+        return client.PublishAsync(message, cancellationToken);
     }
 
     private decimal GenerateTemperature(string key)

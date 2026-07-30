@@ -56,28 +56,31 @@ Implementação atual:
 
 ## Melhorias que fazem sentido
 ### Performance
-- Guardar telemetria de segundo a segundo só no curto prazo e agregar depois.
-- Usar cache para estado atual das máquinas e lâmpadas.
-- Separar tabela de eventos brutos de tabela de agregados.
-- Evitar leituras diretas do frontend à tabela de eventos.
+- [x] Guardar telemetria de segundo a segundo só no curto prazo e agregar depois — retenção configurável por `TelemetryRetentionDays`.
+- [x] Usar cache para estado atual das máquinas e lâmpadas — cache de regras e de severidade no caminho quente da telemetria.
+- [x] Separar tabela de eventos brutos de tabela de agregados — agregação por `GROUP BY` em SQL, por máquina e por zona.
+- [x] Evitar leituras diretas do frontend à tabela de eventos — o snapshot do dashboard é limitado e servido de tabelas de estado.
+- [ ] Redis para estado quente partilhado entre instâncias.
 
 ### Robustez
-- Retry com backoff para MQTT e DB.
-- Health checks para broker, base de dados e SignalR.
-- Outbox pattern para comandos de iluminação, para não perder mensagens.
-- Idempotência em eventos MQTT para evitar duplicados.
+- [x] Retry com backoff para MQTT — reconexão exponencial no backend e no simulador.
+- [x] Health checks para broker e base de dados — `/health` e `/health/ready`.
+- [ ] Outbox pattern para comandos de iluminação, para não perder mensagens.
+- [ ] Idempotência em eventos MQTT para evitar duplicados.
 
 ### Qualidade do produto
-- Catálogo de máquinas com limites configuráveis por máquina.
-- Modo demo com cenários pré-definidos: normal, stress, falha, manutenção.
-- Histórico de alertas com acknowledge pelo operador.
-- Trilho de auditoria para comandos de luz e alterações de regra.
+- [x] Catálogo de máquinas com limites configuráveis por máquina.
+- [x] Histórico de alertas com acknowledge pelo operador.
+- [ ] Modo demo com cenários pré-definidos: normal, stress, falha, manutenção.
+- [ ] Trilho de auditoria para comandos de luz e alterações de regra.
 
 ### Segurança
-- Autenticação com roles: Operador, Supervisor, Admin.
-- Tópicos MQTT separados por domínio e permissões.
-- Validação de payload e assinatura de comandos internos.
-- Rate limit nas rotas de comando.
+- [x] Autenticação com roles: Operador, Supervisor, Admin.
+- [x] Validação de payload nas mensagens MQTT.
+- [x] Rate limit nas rotas de comando e de autenticação.
+- [x] Arranque bloqueado fora de desenvolvimento com chave de assinatura por definir.
+- [ ] Tópicos MQTT separados por domínio e permissões.
+- [ ] Assinatura de comandos internos.
 
 ## Modelo de dados mínimo
 ### MachineTelemetry

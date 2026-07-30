@@ -32,12 +32,12 @@ async function requestJson<T>(path: string, init?: RequestInit, token?: string |
 
   try {
     response = await fetch(`${API_URL}${path}`, {
+      ...init,
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(init?.headers ?? {})
-      },
-      ...init
+      }
     });
   } catch {
     throw new ApiError('backend-unreachable');
@@ -51,14 +51,20 @@ async function requestJson<T>(path: string, init?: RequestInit, token?: string |
 }
 
 async function requestBlob(path: string, token: string): Promise<Blob> {
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: {
-      Authorization: `Bearer ${token}`
-    }
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+  } catch {
+    throw new ApiError('backend-unreachable');
+  }
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    throw new ApiError(`Request failed: ${response.status}`, response.status);
   }
 
   return response.blob();
@@ -94,13 +100,15 @@ export async function fetchMe(token: string): Promise<CurrentUser> {
   return requestJson<CurrentUser>('/api/auth/me', undefined, token);
 }
 
-export async function fetchWorkspace(token: string): Promise<WorkspaceSnapshot> {
-  const [dashboard, rules, zones, machines, floorplan] = await Promise.all([
+// /api/rules é AdminOnly: pedi-lo com outro perfil rejeitava o Promise.all inteiro
+// e deixava Operadores e Supervisores presos aos dados de fallback locais.
+export async function fetchWorkspace(token: string, role?: string): Promise<WorkspaceSnapshot> {
+  const [dashboard, zones, machines, floorplan, rules] = await Promise.all([
     requestJson<WorkspaceSnapshot['dashboard']>('/api/dashboard', undefined, token),
-    requestJson<RuleDefinition[]>('/api/rules', undefined, token),
     requestJson<Zone[]>('/api/zones', undefined, token),
     requestJson<AdminMachine[]>('/api/admin/machines', undefined, token),
-    requestJson<FloorplanLayout>('/api/floorplan', undefined, token)
+    requestJson<FloorplanLayout>('/api/floorplan', undefined, token),
+    role === 'Admin' ? requestJson<RuleDefinition[]>('/api/rules', undefined, token) : Promise.resolve<RuleDefinition[]>([])
   ]);
 
   return { dashboard, rules, zones, machines, floorplan };

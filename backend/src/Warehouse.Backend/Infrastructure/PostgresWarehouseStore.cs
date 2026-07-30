@@ -1,122 +1,131 @@
+using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Warehouse.Backend.Contracts;
 using Warehouse.Backend.Data;
-using System.Globalization;
 
 namespace Warehouse.Backend.Infrastructure;
 
 public sealed class PostgresWarehouseStore : IWarehouseStore
 {
     private readonly IDbContextFactory<WarehouseDbContext> _dbContextFactory;
+    private readonly WarehouseOptions _options;
 
-    public PostgresWarehouseStore(IDbContextFactory<WarehouseDbContext> dbContextFactory)
+    public PostgresWarehouseStore(IDbContextFactory<WarehouseDbContext> dbContextFactory, IOptions<WarehouseOptions> options)
     {
         _dbContextFactory = dbContextFactory;
+        _options = options.Value;
     }
 
     public async Task<IReadOnlyList<MachineStateDto>> GetMachinesAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.Machines
-            .OrderBy(item => item.Name)
-            .Select(item => new MachineStateDto(item.MachineId, item.Name, item.ZoneId, item.IsOnline, item.LastSeen ?? DateTimeOffset.UtcNow, item.TemperatureC, item.VibrationMs2, item.Rpm, item.EnergyKwh, item.Severity))
-            .ToListAsync(cancellationToken);
+        return await QueryMachines(db).ToListAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<LightingDeviceDto>> GetLightingAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.LightingDevices
-            .OrderBy(item => item.Name)
-            .Select(item => new LightingDeviceDto(item.DeviceId, item.ZoneId, item.Name, item.IsOn, item.LastChangedAt, item.LastCommandSource))
-            .ToListAsync(cancellationToken);
+        return await QueryLighting(db).ToListAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<AlertDto>> GetAlertsAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.Alerts
-            .OrderByDescending(item => item.StartTime)
-            .Select(item => new AlertDto(item.Id.ToString("N"), item.MachineId, item.Severity, item.RuleCode, item.Message, item.StartTime, item.EndTime, item.IsAcknowledged))
-            .ToListAsync(cancellationToken);
+        return await QueryAlerts(db, _options.SnapshotAlertLimit).ToListAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<ConsumptionAggregateDto>> GetAggregatesAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.ConsumptionAggregates
-            .OrderByDescending(item => item.PeriodStart)
-            .Select(item => new ConsumptionAggregateDto(item.Id.ToString("N"), item.ScopeType, item.ScopeId, item.PeriodStart, item.PeriodEnd, item.AverageKwh, item.TotalKwh, item.CostEuro))
-            .ToListAsync(cancellationToken);
+        return await QueryAggregates(db, _options.SnapshotAggregateLimit).ToListAsync(cancellationToken);
     }
 
     public async Task<ConsumptionReportDto> GetConsumptionReportAsync(string month, string? machineId, string? zoneId, CancellationToken cancellationToken = default)
     {
-        if (!DateTimeOffset.TryParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var monthStart))
-        {
-            monthStart = new DateTimeOffset(new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1, 0, 0, 0, DateTimeKind.Utc));
-        }
-
+        var monthStart = ParseMonth(month);
         var monthEnd = monthStart.AddMonths(1);
 
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var aggregates = await db.ConsumptionAggregates
-            .Where(item => item.PeriodStart >= monthStart && item.PeriodStart < monthEnd)
+
+        // O mapa máquina -> zona é pequeno e evita um JOIN por linha do relatório.
+        var machines = await db.Machines
+            .AsNoTracking()
+            .Select(item => new { item.MachineId, item.Name, item.ZoneId })
+            .ToDictionaryAsync(item => item.MachineId, cancellationToken);
+
+        var zones = await db.Zones
+            .AsNoTracking()
+            .Select(item => new { item.ZoneId, item.Name })
+            .ToDictionaryAsync(item => item.ZoneId, cancellationToken);
+
+        var query = db.ConsumptionAggregates
+            .AsNoTracking()
+            .Where(item => item.PeriodStart >= monthStart && item.PeriodStart < monthEnd);
+
+        // Filtros empurrados para SQL: o âmbito máquina é direto, o âmbito zona
+        // inclui também as máquinas dessa zona.
+        if (!string.IsNullOrWhiteSpace(machineId))
+        {
+            query = query.Where(item => item.ScopeId == machineId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(zoneId))
+        {
+            var zoneMachineIds = machines.Values
+                .Where(item => string.Equals(item.ZoneId, zoneId, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.MachineId)
+                .ToArray();
+
+            query = query.Where(item => item.ScopeId == zoneId || zoneMachineIds.Contains(item.ScopeId));
+        }
+
+        var aggregates = await query
             .OrderByDescending(item => item.PeriodStart)
             .ToListAsync(cancellationToken);
 
-        var machines = await db.Machines.ToListAsync(cancellationToken);
-        var zones = await db.Zones.ToListAsync(cancellationToken);
-
-        var rows = aggregates
-            .Select(item =>
+        var rows = new List<ConsumptionReportRowDto>(aggregates.Count);
+        foreach (var item in aggregates)
+        {
+            var isMachineScope = string.Equals(item.ScopeType, "Machine", StringComparison.OrdinalIgnoreCase);
+            machines.TryGetValue(item.ScopeId, out var machine);
+            if (!isMachineScope)
             {
-                var machine = string.Equals(item.ScopeType, "Machine", StringComparison.OrdinalIgnoreCase)
-                    ? machines.FirstOrDefault(candidate => candidate.MachineId == item.ScopeId)
-                    : null;
-                var zone = string.Equals(item.ScopeType, "Zone", StringComparison.OrdinalIgnoreCase)
-                    ? zones.FirstOrDefault(candidate => candidate.ZoneId == item.ScopeId)
-                    : machine is null ? null : zones.FirstOrDefault(candidate => candidate.ZoneId == machine.ZoneId);
+                machine = null;
+            }
 
-                return new ConsumptionReportRowDto(
-                    item.ScopeType,
-                    item.ScopeId,
-                    machine?.Name ?? zone?.Name ?? item.ScopeId,
-                    machine?.MachineId,
-                    machine?.Name,
-                    zone?.ZoneId ?? machine?.ZoneId,
-                    zone?.Name,
-                    item.PeriodStart,
-                    item.PeriodEnd,
-                    item.AverageKwh,
-                    item.TotalKwh,
-                    item.CostEuro);
-            })
-            .Where(row =>
-                (string.IsNullOrWhiteSpace(machineId) || string.Equals(row.MachineId, machineId, StringComparison.OrdinalIgnoreCase) || string.Equals(row.ScopeId, machineId, StringComparison.OrdinalIgnoreCase)) &&
-                (string.IsNullOrWhiteSpace(zoneId) || string.Equals(row.ZoneId, zoneId, StringComparison.OrdinalIgnoreCase) || string.Equals(row.ScopeId, zoneId, StringComparison.OrdinalIgnoreCase)))
-            .OrderByDescending(row => row.PeriodStart)
-            .ToList();
+            var resolvedZoneId = machine?.ZoneId ?? item.ScopeId;
+            zones.TryGetValue(resolvedZoneId, out var zone);
 
-        var totalKwh = rows.Sum(item => item.TotalKwh);
-        var totalCost = rows.Sum(item => item.CostEuro);
+            rows.Add(new ConsumptionReportRowDto(
+                item.ScopeType,
+                item.ScopeId,
+                machine?.Name ?? zone?.Name ?? item.ScopeId,
+                machine?.MachineId,
+                machine?.Name,
+                machine?.ZoneId ?? (zone is null ? null : resolvedZoneId),
+                zone?.Name,
+                item.PeriodStart,
+                item.PeriodEnd,
+                item.AverageKwh,
+                item.TotalKwh,
+                item.CostEuro));
+        }
 
-        return new ConsumptionReportDto(month, machineId, zoneId, DateTimeOffset.UtcNow, totalKwh, totalCost, rows);
+        return new ConsumptionReportDto(month, machineId, zoneId, DateTimeOffset.UtcNow, rows.Sum(item => item.TotalKwh), rows.Sum(item => item.CostEuro), rows);
     }
 
     public async Task<IReadOnlyList<MaintenanceRecordDto>> GetMaintenanceHistoryAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.MaintenanceRecords
-            .OrderByDescending(item => item.CreatedAt)
-            .Select(item => new MaintenanceRecordDto(item.Id.ToString("N"), item.MachineId, item.AlertId, item.Title, item.Status, item.Notes, item.CreatedBy, item.CreatedAt, item.ClosedAt, item.ClosedBy))
-            .ToListAsync(cancellationToken);
+        return await QueryMaintenance(db, _options.SnapshotMaintenanceLimit).ToListAsync(cancellationToken);
     }
 
     public async Task<IReadOnlyList<RuleDefinitionDto>> GetRulesAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await db.Rules
+            .AsNoTracking()
             .OrderBy(item => item.Name)
             .Select(item => new RuleDefinitionDto(item.Id, item.Code, item.Name, item.TargetType, item.TargetId, item.Severity, item.TemperatureThreshold, item.VibrationThreshold, item.DurationSeconds, item.CooldownSeconds, item.IsEnabled))
             .ToListAsync(cancellationToken);
@@ -126,6 +135,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await db.Zones
+            .AsNoTracking()
             .OrderBy(item => item.Name)
             .Select(item => new AdminZoneDto(item.ZoneId, item.Name, item.Description, item.Color, item.IsActive))
             .ToListAsync(cancellationToken);
@@ -135,6 +145,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         return await db.Machines
+            .AsNoTracking()
             .OrderBy(item => item.Name)
             .Select(item => new AdminMachineDto(item.MachineId, item.Name, item.ZoneId, item.IsEnabled, item.IsOnline, item.LastSeen, item.TemperatureC, item.VibrationMs2, item.Rpm, item.EnergyKwh, item.Severity, item.LocationX, item.LocationY))
             .ToListAsync(cancellationToken);
@@ -143,21 +154,21 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
     public async Task<FloorplanLayoutDto> GetFloorplanAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var floorplan = await db.Floorplans
-            .Include(item => item.Pins)
-            .OrderByDescending(item => item.UpdatedAt)
-            .FirstAsync(cancellationToken);
-
-        return ToFloorplanDto(floorplan);
+        return await QueryFloorplanAsync(db, cancellationToken);
     }
 
     public async Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
-        var machines = await GetMachinesAsync(cancellationToken);
-        var lighting = await GetLightingAsync(cancellationToken);
-        var alerts = await GetAlertsAsync(cancellationToken);
-        var aggregates = await GetAggregatesAsync(cancellationToken);
-        var maintenance = await GetMaintenanceHistoryAsync(cancellationToken);
+        // Um único DbContext (uma ligação) para as cinco listas do dashboard,
+        // em vez de cinco contextos independentes.
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        var machines = await QueryMachines(db).ToListAsync(cancellationToken);
+        var lighting = await QueryLighting(db).ToListAsync(cancellationToken);
+        var alerts = await QueryAlerts(db, _options.SnapshotAlertLimit).ToListAsync(cancellationToken);
+        var aggregates = await QueryAggregates(db, _options.SnapshotAggregateLimit).ToListAsync(cancellationToken);
+        var maintenance = await QueryMaintenance(db, _options.SnapshotMaintenanceLimit).ToListAsync(cancellationToken);
+
         return new DashboardSnapshotDto(DateTimeOffset.UtcNow, machines, lighting, alerts, aggregates, maintenance);
     }
 
@@ -240,7 +251,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
     public async Task<AlertDto> AddAlertAsync(AlertDto alert, CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var entity = new AlertEntity
+        db.Alerts.Add(new AlertEntity
         {
             Id = Guid.Parse(alert.Id),
             MachineId = alert.MachineId,
@@ -249,25 +260,21 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
             Message = alert.Message,
             StartTime = alert.StartTime,
             EndTime = alert.EndTime,
-            IsAcknowledged = alert.IsAcknowledged,
-            AcknowledgedAt = null,
-            AcknowledgedBy = null,
-            AcknowledgementNote = null
-        };
+            IsAcknowledged = alert.IsAcknowledged
+        });
 
-        db.Alerts.Add(entity);
         await db.SaveChangesAsync(cancellationToken);
         return alert;
     }
 
     public async Task<AlertDto?> AcknowledgeAlertAsync(string alertId, string acknowledgedBy, string? note, CancellationToken cancellationToken = default)
     {
-        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         if (!Guid.TryParse(alertId, out var parsedId))
         {
             return null;
         }
 
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
         var alert = await db.Alerts.FirstOrDefaultAsync(item => item.Id == parsedId, cancellationToken);
         if (alert is null)
         {
@@ -297,25 +304,6 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
 
         await db.SaveChangesAsync(cancellationToken);
         return new AlertDto(alert.Id.ToString("N"), alert.MachineId, alert.Severity, alert.RuleCode, alert.Message, alert.StartTime, alert.EndTime, alert.IsAcknowledged);
-    }
-
-    public async Task<ConsumptionAggregateDto> AddAggregateAsync(ConsumptionAggregateDto aggregate, CancellationToken cancellationToken = default)
-    {
-        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        db.ConsumptionAggregates.Add(new ConsumptionAggregateEntity
-        {
-            Id = Guid.Parse(aggregate.Id),
-            ScopeType = aggregate.ScopeType,
-            ScopeId = aggregate.ScopeId,
-            PeriodStart = aggregate.PeriodStart,
-            PeriodEnd = aggregate.PeriodEnd,
-            AverageKwh = aggregate.AverageKwh,
-            TotalKwh = aggregate.TotalKwh,
-            CostEuro = aggregate.CostEuro
-        });
-
-        await db.SaveChangesAsync(cancellationToken);
-        return aggregate;
     }
 
     public async Task<MaintenanceRecordDto> AddMaintenanceRecordAsync(CreateMaintenanceRecordDto record, string createdBy, CancellationToken cancellationToken = default)
@@ -423,7 +411,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
         entity.BoundaryPointsJson = layout.BoundaryPointsJson;
         entity.UpdatedAt = DateTimeOffset.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
-        return await GetFloorplanAsync(cancellationToken);
+        return await QueryFloorplanAsync(db, cancellationToken);
     }
 
     public async Task<FloorplanPinDto> UpsertFloorplanPinAsync(FloorplanPinDto pin, CancellationToken cancellationToken = default)
@@ -443,65 +431,158 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
         entity.Y = pin.Y;
         entity.IsVisible = pin.IsVisible;
         entity.ZoneId = pin.ZoneId;
+
+        // A planta e o catálogo de máquinas partilham a posição do mesmo equipamento.
+        if (string.Equals(pin.DeviceType, "Machine", StringComparison.OrdinalIgnoreCase))
+        {
+            var machine = await db.Machines.FirstOrDefaultAsync(item => item.MachineId == pin.DeviceId, cancellationToken);
+            if (machine is not null)
+            {
+                machine.LocationX = pin.X;
+                machine.LocationY = pin.Y;
+            }
+        }
+
         await db.SaveChangesAsync(cancellationToken);
         return pin;
     }
 
-    public async Task<DateTimeOffset?> GetLastTelemetryAtAsync(string machineId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<MachineHeartbeat>> GetMachineHeartbeatsAsync(CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.TelemetryEvents
-            .Where(item => item.MachineId == machineId)
-            .OrderByDescending(item => item.Timestamp)
-            .Select(item => (DateTimeOffset?)item.Timestamp)
-            .FirstOrDefaultAsync(cancellationToken);
-    }
-
-    public async Task<IReadOnlyList<MachineTelemetryDto>> GetRecentTelemetryAsync(string machineId, int take, CancellationToken cancellationToken = default)
-    {
-        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.TelemetryEvents
-            .Join(db.Machines,
-                telemetry => telemetry.MachineId,
-                machine => machine.MachineId,
-                (telemetry, machine) => new { telemetry, machine })
-            .Where(item => item.telemetry.MachineId == machineId)
-            .OrderByDescending(item => item.telemetry.Timestamp)
-            .Take(take)
-            .OrderBy(item => item.telemetry.Timestamp)
-            .Select(item => new MachineTelemetryDto(item.telemetry.MachineId, item.machine.Name, item.machine.ZoneId, item.telemetry.Timestamp, item.telemetry.TemperatureC, item.telemetry.VibrationMs2, item.telemetry.Rpm, item.telemetry.EnergyKwh, item.telemetry.Source))
-            .ToListAsync(cancellationToken);
-    }
-
-    public async Task<IReadOnlyList<MachineTelemetryDto>> GetAllRecentTelemetryAsync(CancellationToken cancellationToken = default)
-    {
-        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        return await db.TelemetryEvents
-            .Join(db.Machines,
-                telemetry => telemetry.MachineId,
-                machine => machine.MachineId,
-                (telemetry, machine) => new { telemetry, machine })
-            .OrderByDescending(item => item.telemetry.Timestamp)
-            .Take(5000)
-            .Select(item => new MachineTelemetryDto(item.telemetry.MachineId, item.machine.Name, item.machine.ZoneId, item.telemetry.Timestamp, item.telemetry.TemperatureC, item.telemetry.VibrationMs2, item.telemetry.Rpm, item.telemetry.EnergyKwh, item.telemetry.Source))
+        return await db.Machines
+            .AsNoTracking()
+            .Where(item => item.IsEnabled)
+            .Select(item => new MachineHeartbeat(item.MachineId, item.Name, item.LastSeen))
             .ToListAsync(cancellationToken);
     }
 
     public async Task SetMachineSeverityAsync(string machineId, string severity, CancellationToken cancellationToken = default)
     {
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
-        var machine = await db.Machines.FirstOrDefaultAsync(item => item.MachineId == machineId, cancellationToken);
-        if (machine is null)
-        {
-            return;
-        }
-
-        machine.Severity = severity;
-        await db.SaveChangesAsync(cancellationToken);
+        await db.Machines
+            .Where(item => item.MachineId == machineId && item.Severity != severity)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.Severity, severity), cancellationToken);
     }
 
-    private static FloorplanLayoutDto ToFloorplanDto(FloorplanLayoutEntity layout)
+    public async Task SetMachineOfflineAsync(string machineId, CancellationToken cancellationToken = default)
     {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        await db.Machines
+            .Where(item => item.MachineId == machineId && item.IsOnline)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.IsOnline, false), cancellationToken);
+    }
+
+    public async Task<int> WriteConsumptionAggregatesAsync(DateTimeOffset periodStart, DateTimeOffset periodEnd, decimal euroPerKwh, CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+
+        var window = db.TelemetryEvents
+            .AsNoTracking()
+            .Where(item => item.Timestamp >= periodStart && item.Timestamp < periodEnd);
+
+        // Somas e médias calculadas em SQL (GROUP BY), sem trazer telemetria bruta para memória.
+        var byMachine = await window
+            .GroupBy(item => item.MachineId)
+            .Select(group => new ScopeTotals("Machine", group.Key, group.Sum(item => item.EnergyKwh), group.Average(item => item.EnergyKwh)))
+            .ToListAsync(cancellationToken);
+
+        var byZone = await window
+            .Join(db.Machines, item => item.MachineId, machine => machine.MachineId, (item, machine) => new { machine.ZoneId, item.EnergyKwh })
+            .GroupBy(item => item.ZoneId)
+            .Select(group => new ScopeTotals("Zone", group.Key, group.Sum(item => item.EnergyKwh), group.Average(item => item.EnergyKwh)))
+            .ToListAsync(cancellationToken);
+
+        var totals = byMachine.Concat(byZone).ToList();
+        if (totals.Count == 0)
+        {
+            return 0;
+        }
+
+        // Idempotência: um novo arranque do worker não duplica a mesma janela.
+        var existing = await db.ConsumptionAggregates
+            .AsNoTracking()
+            .Where(item => item.PeriodStart == periodStart)
+            .Select(item => item.ScopeType + "|" + item.ScopeId)
+            .ToListAsync(cancellationToken);
+
+        var known = existing.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var inserted = 0;
+
+        foreach (var scope in totals)
+        {
+            if (string.IsNullOrWhiteSpace(scope.ScopeId) || !known.Add($"{scope.ScopeType}|{scope.ScopeId}"))
+            {
+                continue;
+            }
+
+            db.ConsumptionAggregates.Add(new ConsumptionAggregateEntity
+            {
+                Id = Guid.NewGuid(),
+                ScopeType = scope.ScopeType,
+                ScopeId = scope.ScopeId,
+                PeriodStart = periodStart,
+                PeriodEnd = periodEnd,
+                AverageKwh = scope.Average,
+                TotalKwh = scope.Total,
+                CostEuro = decimal.Round(scope.Total * euroPerKwh, 4)
+            });
+
+            inserted++;
+        }
+
+        if (inserted > 0)
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
+        return inserted;
+    }
+
+    public async Task<int> PurgeTelemetryOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default)
+    {
+        await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
+        return await db.TelemetryEvents
+            .Where(item => item.Timestamp < cutoff)
+            .ExecuteDeleteAsync(cancellationToken);
+    }
+
+    private static IQueryable<MachineStateDto> QueryMachines(WarehouseDbContext db) => db.Machines
+        .AsNoTracking()
+        .OrderBy(item => item.Name)
+        .Select(item => new MachineStateDto(item.MachineId, item.Name, item.ZoneId, item.IsOnline, item.LastSeen ?? DateTimeOffset.UtcNow, item.TemperatureC, item.VibrationMs2, item.Rpm, item.EnergyKwh, item.Severity));
+
+    private static IQueryable<LightingDeviceDto> QueryLighting(WarehouseDbContext db) => db.LightingDevices
+        .AsNoTracking()
+        .OrderBy(item => item.Name)
+        .Select(item => new LightingDeviceDto(item.DeviceId, item.ZoneId, item.Name, item.IsOn, item.LastChangedAt, item.LastCommandSource));
+
+    private static IQueryable<AlertDto> QueryAlerts(WarehouseDbContext db, int limit) => db.Alerts
+        .AsNoTracking()
+        .OrderByDescending(item => item.StartTime)
+        .Take(limit)
+        .Select(item => new AlertDto(item.Id.ToString("N"), item.MachineId, item.Severity, item.RuleCode, item.Message, item.StartTime, item.EndTime, item.IsAcknowledged));
+
+    private static IQueryable<ConsumptionAggregateDto> QueryAggregates(WarehouseDbContext db, int limit) => db.ConsumptionAggregates
+        .AsNoTracking()
+        .OrderByDescending(item => item.PeriodStart)
+        .Take(limit)
+        .Select(item => new ConsumptionAggregateDto(item.Id.ToString("N"), item.ScopeType, item.ScopeId, item.PeriodStart, item.PeriodEnd, item.AverageKwh, item.TotalKwh, item.CostEuro));
+
+    private static IQueryable<MaintenanceRecordDto> QueryMaintenance(WarehouseDbContext db, int limit) => db.MaintenanceRecords
+        .AsNoTracking()
+        .OrderByDescending(item => item.CreatedAt)
+        .Take(limit)
+        .Select(item => new MaintenanceRecordDto(item.Id.ToString("N"), item.MachineId, item.AlertId, item.Title, item.Status, item.Notes, item.CreatedBy, item.CreatedAt, item.ClosedAt, item.ClosedBy));
+
+    private static async Task<FloorplanLayoutDto> QueryFloorplanAsync(WarehouseDbContext db, CancellationToken cancellationToken)
+    {
+        var layout = await db.Floorplans
+            .AsNoTracking()
+            .Include(item => item.Pins)
+            .OrderByDescending(item => item.UpdatedAt)
+            .FirstAsync(cancellationToken);
+
         return new FloorplanLayoutDto(
             layout.Id,
             layout.Name,
@@ -515,4 +596,17 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
                 .Select(item => new FloorplanPinDto(item.Id, item.DeviceType, item.DeviceId, item.Label, item.X, item.Y, item.IsVisible, item.ZoneId))
                 .ToList());
     }
+
+    private static DateTimeOffset ParseMonth(string month)
+    {
+        if (DateTimeOffset.TryParseExact($"{month}-01", "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed))
+        {
+            return parsed;
+        }
+
+        var now = DateTime.UtcNow;
+        return new DateTimeOffset(new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc));
+    }
+
+    private sealed record ScopeTotals(string ScopeType, string ScopeId, decimal Total, decimal Average);
 }
