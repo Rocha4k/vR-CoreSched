@@ -1,4 +1,4 @@
-namespace Warehouse.Backend.Services;
+﻿namespace Warehouse.Backend.Services;
 
 public static class MqttTopicCatalog
 {
@@ -9,8 +9,8 @@ public static class MqttTopicCatalog
     private const string LightingPrefix = "warehouse/lighting/";
 
     /// <summary>
-    /// Classifica o tópico por prefixo e sufixo. A correspondência anterior por
-    /// <c>Contains("state")</c> também apanhava warehouse/machines/{id}/state.
+    /// Classifies the topic by prefix and suffix. The previous <c>Contains("state")</c>
+    /// match also caught warehouse/machines/{id}/state.
     /// </summary>
     public static MqttTopicKind Classify(string topic) => topic switch
     {

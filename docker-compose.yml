@@ -7,7 +7,8 @@ services:
       POSTGRES_USER: vruser
       POSTGRES_PASSWORD: vrpassword
     ports:
-      - "5432:5432"
+      # 5432 no host costuma estar ocupado por uma instalação nativa do PostgreSQL.
+      - "55432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 

@@ -101,25 +101,25 @@ export function WarehouseMap({ layout, machines, lighting, editable = false, onM
         ref={svgRef}
         viewBox="0 0 100 100"
         role="img"
-        aria-label="Planta do armazém"
+        aria-label="Warehouse floor plan"
         className="warehouse-map__svg"
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
       >
         <defs>
-          <pattern id="warehouse-grid" width="8" height="8" patternUnits="userSpaceOnUse">
-            <path d="M 8 0 L 0 0 0 8" fill="none" stroke="rgba(148,163,184,0.12)" strokeWidth="0.6" />
+          <pattern id="warehouse-grid" width="5" height="5" patternUnits="userSpaceOnUse">
+            <path d="M 5 0 L 0 0 0 5" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="0.3" />
           </pattern>
-          <linearGradient id="warehouse-glow" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="rgba(245,158,11,0.12)" />
-            <stop offset="100%" stopColor="rgba(34,197,94,0.08)" />
-          </linearGradient>
+          <radialGradient id="warehouse-vignette" cx="50%" cy="40%" r="70%">
+            <stop offset="0%" stopColor="rgba(255,255,255,0.035)" />
+            <stop offset="100%" stopColor="rgba(0,0,0,0)" />
+          </radialGradient>
         </defs>
 
-        <rect x="0" y="0" width="100" height="100" rx="4" className="warehouse-map__background" />
-        <rect x="0" y="0" width="100" height="100" fill="url(#warehouse-grid)" opacity="0.45" />
+        <rect x="0" y="0" width="100" height="100" className="warehouse-map__background" />
+        <rect x="0" y="0" width="100" height="100" fill="url(#warehouse-grid)" />
+        <rect x="0" y="0" width="100" height="100" fill="url(#warehouse-vignette)" />
         <polygon points={pointsForRender} className="warehouse-map__boundary" />
-        <rect x="0" y="0" width="100" height="100" fill="url(#warehouse-glow)" opacity="0.35" />
 
         {editable && onAddBoundaryPoint ? (
           <rect

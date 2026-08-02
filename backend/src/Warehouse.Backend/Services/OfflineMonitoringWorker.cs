@@ -1,4 +1,4 @@
-using Microsoft.AspNetCore.SignalR;
+﻿using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
 using Warehouse.Backend.Contracts;
 using Warehouse.Backend.Hubs;
@@ -43,7 +43,7 @@ public sealed class OfflineMonitoringWorker : BackgroundService
             }
             catch (Exception exception)
             {
-                _logger.LogError(exception, "Falha na deteção de máquinas offline.");
+                _logger.LogError(exception, "Offline machine detection failed.");
             }
         }
     }

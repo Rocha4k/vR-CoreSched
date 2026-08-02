@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using Microsoft.Extensions.Options;
 using Warehouse.Backend.Contracts;
 using Warehouse.Backend.Infrastructure;
@@ -49,8 +49,8 @@ public sealed class RuleEngine : IRuleEngine
 
             if (!breaching)
             {
-                // Só aqui se fecha a janela. Reiniciá-la a cada mensagem impedia
-                // que DurationSeconds fosse alguma vez atingido.
+                // The window only closes here. Resetting it on every message meant
+                // DurationSeconds could never be reached.
                 window.Reset();
                 continue;
             }
@@ -70,7 +70,7 @@ public sealed class RuleEngine : IRuleEngine
                     telemetry.MachineId,
                     rule.Severity,
                     rule.Code,
-                    $"{telemetry.Name} ultrapassou os limiares da regra {rule.Name}.",
+                    $"{telemetry.Name} exceeded the thresholds of rule {rule.Name}.",
                     now,
                     null,
                     false),
@@ -87,7 +87,7 @@ public sealed class RuleEngine : IRuleEngine
         var cooldown = TimeSpan.FromSeconds(Math.Max(1, _options.AlertCooldownSeconds));
         var now = DateTimeOffset.UtcNow;
 
-        // Uma única query em vez de uma leitura de telemetria por máquina.
+        // A single query instead of one telemetry read per machine.
         var heartbeats = await _store.GetMachineHeartbeatsAsync(cancellationToken);
         var alerts = new List<AlertDto>();
 
@@ -102,7 +102,7 @@ public sealed class RuleEngine : IRuleEngine
             await _store.SetMachineOfflineAsync(machine.MachineId, cancellationToken);
             await ApplySeverityAsync(machine.MachineId, "Warning", cancellationToken);
 
-            // Sem cooldown nascia um alerta novo em cada varrimento, enchendo a tabela.
+            // Without a cooldown a fresh alert was raised on every sweep, flooding the table.
             if (_lastOfflineAlert.TryGetValue(machine.MachineId, out var lastAlert) && now - lastAlert <= cooldown)
             {
                 continue;
@@ -115,7 +115,7 @@ public sealed class RuleEngine : IRuleEngine
                     machine.MachineId,
                     "Warning",
                     OfflineRuleCode,
-                    $"{machine.Name} não envia telemetria há mais de {threshold.TotalSeconds:0} segundos.",
+                    $"{machine.Name} has not reported telemetry for more than {threshold.TotalSeconds:0} seconds.",
                     now,
                     null,
                     false),
@@ -142,8 +142,8 @@ public sealed class RuleEngine : IRuleEngine
 
     private async Task ApplySeverityAsync(string machineId, string severity, CancellationToken cancellationToken)
     {
-        // O caminho quente recebe uma mensagem por máquina por segundo: só se escreve
-        // na base de dados quando a severidade muda de facto.
+        // The hot path takes one message per machine per second: only write to the
+        // database when the severity actually changes.
         if (_lastSeverity.TryGetValue(machineId, out var current) && string.Equals(current, severity, StringComparison.OrdinalIgnoreCase))
         {
             return;
@@ -171,7 +171,7 @@ public sealed class RuleEngine : IRuleEngine
 
             _rules = await _store.GetRulesAsync(cancellationToken);
             _rulesLoadedAt = DateTimeOffset.UtcNow;
-            _logger.LogDebug("Cache de regras recarregada com {Count} regras.", _rules.Count);
+            _logger.LogDebug("Rule cache reloaded with {Count} rules.", _rules.Count);
             return _rules;
         }
         finally

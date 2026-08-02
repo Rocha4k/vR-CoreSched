@@ -50,18 +50,30 @@ const fallbackWorkspace = createFallbackWorkspace();
 const accessTokenStorageKey = 'vrcoresched.access';
 const refreshTokenStorageKey = 'vrcoresched.refresh';
 const legacyTokenStorageKey = 'vrcoresched.token';
-// O simulador publica telemetria ao segundo por máquina. Agrupar as mensagens
-// numa janela curta troca N re-renders por segundo por um só.
+// The simulator publishes one telemetry message per machine per second.
+// Batching them into a short window trades N re-renders per second for one.
 const telemetryFlushMs = 500;
 const workspaceRefreshMs = 60000;
 
 type AppTab = 'dashboard' | 'reports' | 'profiles' | 'admin' | 'floorplan';
+type ConnectionState = { tone: 'live' | 'wait' | 'down'; label: string };
+
+const connectionStates = {
+  awaitingLogin: { tone: 'wait', label: 'Awaiting sign-in' },
+  connecting: { tone: 'wait', label: 'Connecting' },
+  live: { tone: 'live', label: 'Live' },
+  synced: { tone: 'live', label: 'Synced' },
+  reconnecting: { tone: 'wait', label: 'Reconnecting' },
+  offline: { tone: 'down', label: 'Offline — local data' },
+  lost: { tone: 'down', label: 'Connection lost' },
+  noRealtime: { tone: 'wait', label: 'Polling — no realtime' }
+} satisfies Record<string, ConnectionState>;
 
 export default function App() {
   const pendingToggles = useRef(new Set<string>());
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>(fallbackWorkspace);
-  const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
-  const [connectionStatus, setConnectionStatus] = useState('a ligar...');
+  const [activeTab, setActiveTab] = useState<AppTab>(readTabFromHash);
+  const [connection, setConnection] = useState<ConnectionState>(connectionStates.connecting);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
@@ -72,6 +84,17 @@ export default function App() {
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportFilters, setReportFilters] = useState<ReportFilters>(createDefaultReportFilters());
+
+  // Keep the tab in the URL so a refresh or a shared link lands on the same view.
+  useEffect(() => {
+    window.location.hash = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(readTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
 
   useEffect(() => {
     const storedAccess = window.localStorage.getItem(accessTokenStorageKey) ?? window.localStorage.getItem(legacyTokenStorageKey);
@@ -95,7 +118,7 @@ export default function App() {
       setCurrentUser(null);
       setUsers([]);
       setReport(null);
-      setConnectionStatus('a aguardar login...');
+      setConnection(connectionStates.awaitingLogin);
       return;
     }
 
@@ -104,7 +127,7 @@ export default function App() {
     }
 
     let mounted = true;
-    const connection = createOperationsConnection(accessToken);
+    const hub = createOperationsConnection(accessToken);
     const telemetryBuffer = new Map<string, MachineTelemetry>();
     let flushHandle: number | null = null;
 
@@ -113,11 +136,11 @@ export default function App() {
         const data = await fetchWorkspace(accessToken, currentRole);
         if (mounted) {
           setWorkspace(data);
-          setConnectionStatus('sincronizado');
+          setConnection(current => (current.tone === 'live' ? current : connectionStates.synced));
         }
       } catch {
         if (mounted) {
-          setConnectionStatus('modo offline com dados locais');
+          setConnection(connectionStates.offline);
         }
       }
     };
@@ -134,7 +157,7 @@ export default function App() {
     const handleTelemetry = (telemetry: MachineTelemetry) => {
       if (!mounted) return;
 
-      // Só interessa a leitura mais recente de cada máquina dentro da janela.
+      // Only the newest reading per machine within the window matters.
       telemetryBuffer.set(telemetry.machineId, telemetry);
       if (flushHandle === null) {
         flushHandle = window.setTimeout(flushTelemetry, telemetryFlushMs);
@@ -178,22 +201,22 @@ export default function App() {
       }));
     };
 
-    connection.on('telemetry.received', handleTelemetry);
-    connection.on('alert.created', handleAlert);
-    connection.on('alert.updated', handleAlert);
-    connection.on('maintenance.updated', handleMaintenance);
-    connection.on('lighting.updated', handleLighting);
-    connection.on('rules.updated', refreshWorkspace);
-    connection.on('machines.updated', refreshWorkspace);
-    connection.on('zones.updated', refreshWorkspace);
-    connection.on('floorplan.updated', refreshWorkspace);
-    connection.onreconnecting(() => setConnectionStatus('a reconectar...'));
-    connection.onreconnected(() => setConnectionStatus('reconectado'));
-    connection.onclose(() => setConnectionStatus('ligação perdida'));
+    hub.on('telemetry.received', handleTelemetry);
+    hub.on('alert.created', handleAlert);
+    hub.on('alert.updated', handleAlert);
+    hub.on('maintenance.updated', handleMaintenance);
+    hub.on('lighting.updated', handleLighting);
+    hub.on('rules.updated', refreshWorkspace);
+    hub.on('machines.updated', refreshWorkspace);
+    hub.on('zones.updated', refreshWorkspace);
+    hub.on('floorplan.updated', refreshWorkspace);
+    hub.onreconnecting(() => setConnection(connectionStates.reconnecting));
+    hub.onreconnected(() => setConnection(connectionStates.live));
+    hub.onclose(() => setConnection(connectionStates.lost));
 
-    void connection.start()
-      .then(() => setConnectionStatus('ligado em tempo real'))
-      .catch(() => setConnectionStatus('sem SignalR, a usar fallback local'));
+    void hub.start()
+      .then(() => setConnection(connectionStates.live))
+      .catch(() => setConnection(connectionStates.noRealtime));
 
     void refreshWorkspace();
     const refreshInterval = window.setInterval(() => { void refreshWorkspace(); }, workspaceRefreshMs);
@@ -204,7 +227,7 @@ export default function App() {
       if (flushHandle !== null) {
         window.clearTimeout(flushHandle);
       }
-      void connection.stop();
+      void hub.stop();
     };
   }, [accessToken, currentRole]);
 
@@ -265,7 +288,7 @@ export default function App() {
       })
       .catch(() => {
         if (mounted) {
-          setReportError('Não foi possível carregar o relatório.');
+          setReportError('Could not load the report.');
         }
       })
       .finally(() => {
@@ -318,11 +341,16 @@ export default function App() {
       setLoginError(null);
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        setLoginError('Credenciais inválidas.');
+        setLoginError('Invalid credentials.');
         return;
       }
 
-      setLoginError('Backend indisponível. Verifica se o serviço .NET está a correr em http://localhost:5080.');
+      if (error instanceof ApiError && error.status === 429) {
+        setLoginError('Too many attempts. Wait a minute and try again.');
+        return;
+      }
+
+      setLoginError('Backend unreachable. Check that the .NET service is running on http://localhost:5080.');
     }
   };
 
@@ -475,118 +503,144 @@ export default function App() {
 
   const tabs = useMemo(() => {
     const items: Array<{ key: AppTab; label: string }> = [
-      { key: 'dashboard', label: 'Operação' },
+      { key: 'dashboard', label: 'Operations' },
       { key: 'reports', label: 'Reporting' },
-      { key: 'profiles', label: 'Perfis' }
+      { key: 'profiles', label: 'Profiles' }
     ];
 
     if (canAccessAdmin) {
-      items.push({ key: 'admin', label: 'Administração' });
-      items.push({ key: 'floorplan', label: 'Planta' });
+      items.push({ key: 'admin', label: 'Administration' });
+      items.push({ key: 'floorplan', label: 'Floor plan' });
     }
 
     return items;
   }, [canAccessAdmin]);
 
-  return (
-    <main className="app-shell">
-      {!authReady ? <div className="panel auth-panel"><p>A carregar sessão...</p></div> : null}
+  if (!authReady) {
+    return <div className="app-loading">Restoring session…</div>;
+  }
 
-      {accessToken && currentUser ? (
-        <>
-          <header className="topbar">
+  if (!accessToken || !currentUser) {
+    return (
+      <div className="auth-wrap">
+        <section className="auth-card">
+          <div className="auth-card__brand">
+            <img src="/logo-256.png" alt="" width={54} height={54} />
             <div>
-              <span className="topbar__brand">vR-CoreSched</span>
-              <span className="topbar__status">{connectionStatus}</span>
+              <h1>vR-CoreSched</h1>
+              <p>Warehouse monitoring &amp; control</p>
             </div>
-            <div className="topbar__user">
-              <span>{currentUser.fullName}</span>
-              <small>{currentUser.role}</small>
-              <button type="button" className="tab" onClick={handleLogout}>Sair</button>
-            </div>
-            <nav className="tabs">
-              {tabs.map(tab => (
-                <button key={tab.key} type="button" className={activeTab === tab.key ? 'tab is-active' : 'tab'} onClick={() => setActiveTab(tab.key)}>
-                  {tab.label}
-                </button>
-              ))}
-            </nav>
-          </header>
-
-          {activeTab === 'dashboard' ? (
-            <DashboardView
-              workspace={workspace}
-              connectionStatus={connectionStatus}
-              onToggleLight={handleToggleLight}
-              onAcknowledgeAlert={handleAcknowledgeAlert}
-              onCreateMaintenance={handleCreateMaintenance}
-              canCreateMaintenance={canCreateMaintenance}
-            />
-          ) : null}
-
-          {activeTab === 'reports' ? (
-            <ReportingPanel
-              filters={reportFilters}
-              report={report}
-              machines={workspace.machines}
-              zones={workspace.zones}
-              loading={reportLoading}
-              onChangeFilters={setReportFilters}
-              onExportCsv={() => void handleExportCsv()}
-              onExportPdf={() => void handleExportPdf()}
-            />
-          ) : null}
-
-          {activeTab === 'profiles' ? (
-            <ProfilesPanel
-              currentUser={currentUser}
-              users={users}
-              canManageUsers={canManageUsers}
-              onUpdateProfile={handleUpdateProfile}
-              onCreateUser={handleCreateUser}
-              onSaveUser={handleSaveUser}
-            />
-          ) : null}
-
-          {activeTab === 'admin' && canAccessAdmin ? (
-            <AdminPanel
-              rules={workspace.rules}
-              machines={workspace.machines}
-              zones={workspace.zones}
-              onSaveRule={handleSaveRule}
-              onSaveMachine={handleSaveMachine}
-              onSaveZone={handleSaveZone}
-            />
-          ) : null}
-
-          {activeTab === 'floorplan' && canAccessAdmin ? (
-            <FloorplanEditor
-              layout={workspace.floorplan}
-              machines={workspace.machines}
-              lighting={workspace.dashboard.lighting}
-              onMovePin={pin => void handleMovePin(pin)}
-              onAddBoundaryPoint={point => void handleAddBoundaryPoint(point)}
-            />
-          ) : null}
-
-          {reportError ? <div className="panel report-error">{reportError}</div> : null}
-        </>
-      ) : (
-        <section className="panel auth-panel auth-panel--login">
-          <div>
-            <p className="eyebrow">Acesso seguro</p>
-            <h1>Entre com o seu perfil</h1>
-            <p className="lead">Operador para controlo do dia a dia, Supervisor para configuração operacional e Admin para regras, utilizadores e estrutura global.</p>
           </div>
           <form className="auth-form" onSubmit={handleLogin}>
-            <input name="username" placeholder="Username" autoComplete="username" />
-            <input name="password" type="password" placeholder="Password" autoComplete="current-password" />
+            <label className="field">
+              <span className="field__label">Username</span>
+              <input name="username" autoComplete="username" autoFocus />
+            </label>
+            <label className="field">
+              <span className="field__label">Password</span>
+              <input name="password" type="password" autoComplete="current-password" />
+            </label>
             {loginError ? <div className="auth-form__error">{loginError}</div> : null}
-            <button type="submit">Entrar</button>
-            <small>Credenciais demo: operator/operator123, supervisor/supervisor123, admin/admin123</small>
+            <button type="submit" className="btn btn--primary">Sign in</button>
           </form>
+          <div className="auth-card__hint">
+            Demo accounts<br />
+            <code>operator / operator123</code> · day-to-day control<br />
+            <code>supervisor / supervisor123</code> · operational setup<br />
+            <code>admin / admin123</code> · rules, users and layout
+          </div>
         </section>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <img className="brand__mark" src="/logo-mark.png" alt="" width={30} height={30} />
+          <span className="brand__text">
+            <span className="brand__name">vR-CoreSched</span>
+            <span className={`conn conn--${connection.tone}`}>
+              <span className="conn__dot" />
+              <span className="conn__label">{connection.label}</span>
+            </span>
+          </span>
+        </div>
+
+        <nav className="tabs">
+          {tabs.map(tab => (
+            <button key={tab.key} type="button" className={activeTab === tab.key ? 'tab is-active' : 'tab'} onClick={() => setActiveTab(tab.key)}>
+              {tab.label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="topbar__user">
+          <span className="topbar__identity">
+            <span>{currentUser.fullName}</span>
+            <small>{currentUser.role}</small>
+          </span>
+          <button type="button" className="btn btn--ghost btn--sm" onClick={handleLogout}>Sign out</button>
+        </div>
+      </header>
+
+      {activeTab === 'dashboard' ? (
+        <DashboardView
+          workspace={workspace}
+          onToggleLight={handleToggleLight}
+          onAcknowledgeAlert={handleAcknowledgeAlert}
+          onCreateMaintenance={handleCreateMaintenance}
+          canCreateMaintenance={canCreateMaintenance}
+        />
+      ) : null}
+
+      {activeTab === 'reports' ? (
+        <ReportingPanel
+          filters={reportFilters}
+          report={report}
+          machines={workspace.machines}
+          zones={workspace.zones}
+          loading={reportLoading}
+          error={reportError}
+          onChangeFilters={setReportFilters}
+          onExportCsv={() => void handleExportCsv()}
+          onExportPdf={() => void handleExportPdf()}
+        />
+      ) : null}
+
+      {activeTab === 'profiles' ? (
+        <ProfilesPanel
+          currentUser={currentUser}
+          users={users}
+          canManageUsers={canManageUsers}
+          onUpdateProfile={handleUpdateProfile}
+          onCreateUser={handleCreateUser}
+          onSaveUser={handleSaveUser}
+        />
+      ) : null}
+
+      {activeTab === 'admin' && canAccessAdmin ? (
+        <AdminPanel
+          rules={workspace.rules}
+          machines={workspace.machines}
+          zones={workspace.zones}
+          canEditRules={canAccessRules}
+          onSaveRule={handleSaveRule}
+          onSaveMachine={handleSaveMachine}
+          onSaveZone={handleSaveZone}
+        />
+      ) : null}
+
+      {activeTab === 'floorplan' && canAccessAdmin ? (
+        <FloorplanEditor
+          layout={workspace.floorplan}
+          machines={workspace.machines}
+          lighting={workspace.dashboard.lighting}
+          onMovePin={pin => void handleMovePin(pin)}
+          onAddBoundaryPoint={point => void handleAddBoundaryPoint(point)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -597,46 +651,46 @@ function createFallbackWorkspace(): WorkspaceSnapshot {
   const dashboard: DashboardSnapshot = {
     generatedAt,
     machines: [
-      { machineId: 'press-01', name: 'Prensa Hidráulica', zone: 'zona-producao', isOnline: true, lastSeen: generatedAt, temperatureC: 78.4, vibrationMs2: 3.2, rpm: 1210, energyKwh: 9.5, severity: 'Info' },
-      { machineId: 'line-01', name: 'Linha de Montagem', zone: 'linha-montagem', isOnline: true, lastSeen: generatedAt, temperatureC: 66.1, vibrationMs2: 1.7, rpm: 812, energyKwh: 6.2, severity: 'Info' },
-      { machineId: 'belt-01', name: 'Tapete Rolante', zone: 'corredor-a', isOnline: true, lastSeen: generatedAt, temperatureC: 59.3, vibrationMs2: 1.1, rpm: 404, energyKwh: 3.4, severity: 'Info' }
+      { machineId: 'press-01', name: 'Hydraulic Press', zone: 'production-area', isOnline: true, lastSeen: generatedAt, temperatureC: 78.4, vibrationMs2: 3.2, rpm: 1210, energyKwh: 9.5, severity: 'Info' },
+      { machineId: 'line-01', name: 'Assembly Line', zone: 'assembly-line', isOnline: true, lastSeen: generatedAt, temperatureC: 66.1, vibrationMs2: 1.7, rpm: 812, energyKwh: 6.2, severity: 'Info' },
+      { machineId: 'belt-01', name: 'Conveyor Belt', zone: 'aisle-a', isOnline: true, lastSeen: generatedAt, temperatureC: 59.3, vibrationMs2: 1.1, rpm: 404, energyKwh: 3.4, severity: 'Info' }
     ],
     lighting: [
-      { id: 'light-carga', zone: 'zona-carga', name: 'Luz da Zona de Carga', isOn: true, lastChangedAt: generatedAt, lastCommandSource: 'seed' },
-      { id: 'light-corridor-a', zone: 'corredor-a', name: 'Luz do Corredor A', isOn: true, lastChangedAt: generatedAt, lastCommandSource: 'seed' },
-      { id: 'light-corridor-b', zone: 'corredor-b', name: 'Luz do Corredor B', isOn: false, lastChangedAt: generatedAt, lastCommandSource: 'seed' },
-      { id: 'light-office', zone: 'escritorios', name: 'Luz dos Escritórios', isOn: true, lastChangedAt: generatedAt, lastCommandSource: 'seed' }
+      { id: 'light-loading', zone: 'loading-bay', name: 'Loading Bay Light', isOn: true, lastChangedAt: generatedAt, lastCommandSource: 'seed' },
+      { id: 'light-aisle-a', zone: 'aisle-a', name: 'Aisle A Light', isOn: true, lastChangedAt: generatedAt, lastCommandSource: 'seed' },
+      { id: 'light-aisle-b', zone: 'aisle-b', name: 'Aisle B Light', isOn: false, lastChangedAt: generatedAt, lastCommandSource: 'seed' },
+      { id: 'light-office', zone: 'offices', name: 'Office Light', isOn: true, lastChangedAt: generatedAt, lastCommandSource: 'seed' }
     ],
     alerts: [],
     aggregates: [{ id: 'agg-1', scopeType: 'Machine', scopeId: 'press-01', periodStart: generatedAt, periodEnd: generatedAt, averageKwh: 8.9, totalKwh: 78.2, costEuro: 14.08 }],
     maintenanceRecords: [
-      { id: 'maint-1', machineId: 'press-01', alertId: null, title: 'Verificação preventiva da prensa', status: 'Closed', notes: 'Lubrificação concluída.', createdBy: 'system', createdAt: generatedAt, closedAt: generatedAt, closedBy: 'supervisor' }
+      { id: 'maint-1', machineId: 'press-01', alertId: null, title: 'Preventive press inspection', status: 'Closed', notes: 'Lubrication completed.', createdBy: 'system', createdAt: generatedAt, closedAt: generatedAt, closedBy: 'supervisor' }
     ]
   };
 
   return {
     dashboard,
     rules: [
-      { id: 'rule-temp-vib-press', code: 'TEMP_VIB_001', name: 'Prensa crítica por temperatura e vibração', targetType: 'Machine', targetId: 'press-01', severity: 'Critical', temperatureThreshold: 85, vibrationThreshold: 8, durationSeconds: 5, cooldownSeconds: 30, isEnabled: true },
-      { id: 'rule-temp-vib-line', code: 'TEMP_VIB_002', name: 'Linha de montagem sob stress', targetType: 'Machine', targetId: 'line-01', severity: 'Warning', temperatureThreshold: 82, vibrationThreshold: 7, durationSeconds: 6, cooldownSeconds: 30, isEnabled: true },
-      { id: 'rule-light-off-hours', code: 'LIGHT_WASTE_001', name: 'Luz fora de horário', targetType: 'Zone', targetId: 'corredor-a', severity: 'Info', temperatureThreshold: 0, vibrationThreshold: 0, durationSeconds: 0, cooldownSeconds: 60, isEnabled: false }
+      { id: 'rule-temp-vib-press', code: 'TEMP_VIB_001', name: 'Press critical on temperature and vibration', targetType: 'Machine', targetId: 'press-01', severity: 'Critical', temperatureThreshold: 85, vibrationThreshold: 8, durationSeconds: 5, cooldownSeconds: 30, isEnabled: true },
+      { id: 'rule-temp-vib-line', code: 'TEMP_VIB_002', name: 'Assembly line under stress', targetType: 'Machine', targetId: 'line-01', severity: 'Warning', temperatureThreshold: 82, vibrationThreshold: 7, durationSeconds: 6, cooldownSeconds: 30, isEnabled: true },
+      { id: 'rule-light-off-hours', code: 'LIGHT_WASTE_001', name: 'Lighting outside operating hours', targetType: 'Zone', targetId: 'aisle-a', severity: 'Info', temperatureThreshold: 0, vibrationThreshold: 0, durationSeconds: 0, cooldownSeconds: 60, isEnabled: false }
     ],
     zones: [
-      { zoneId: 'zona-carga', name: 'Zona de Carga', description: 'Área de receção e expedição.', color: '#f59e0b', isActive: true },
-      { zoneId: 'zona-producao', name: 'Zona de Produção', description: 'Área principal das máquinas pesadas.', color: '#22c55e', isActive: true },
-      { zoneId: 'linha-montagem', name: 'Linha de Montagem', description: 'Montagem e acabamento.', color: '#38bdf8', isActive: true },
-      { zoneId: 'corredor-a', name: 'Corredor A', description: 'Corredor principal.', color: '#a78bfa', isActive: true },
-      { zoneId: 'corredor-b', name: 'Corredor B', description: 'Corredor secundário.', color: '#f97316', isActive: true },
-      { zoneId: 'escritorios', name: 'Escritórios', description: 'Zona administrativa.', color: '#f43f5e', isActive: true }
+      { zoneId: 'loading-bay', name: 'Loading Bay', description: 'Goods receiving and dispatch.', color: '#d8d8de', isActive: true },
+      { zoneId: 'production-area', name: 'Production Area', description: 'Main heavy machinery floor.', color: '#b4b4bd', isActive: true },
+      { zoneId: 'assembly-line', name: 'Assembly Line', description: 'Assembly and finishing.', color: '#9a9aa4', isActive: true },
+      { zoneId: 'aisle-a', name: 'Aisle A', description: 'Main aisle.', color: '#80808b', isActive: true },
+      { zoneId: 'aisle-b', name: 'Aisle B', description: 'Secondary aisle.', color: '#6a6a75', isActive: true },
+      { zoneId: 'offices', name: 'Offices', description: 'Administrative area.', color: '#55555f', isActive: true }
     ],
     machines: [
-      { machineId: 'press-01', name: 'Prensa Hidráulica', zoneId: 'zona-producao', isEnabled: true, isOnline: true, lastSeen: generatedAt, temperatureC: 78.4, vibrationMs2: 3.2, rpm: 1210, energyKwh: 9.5, severity: 'Info', locationX: 22, locationY: 28 },
-      { machineId: 'line-01', name: 'Linha de Montagem', zoneId: 'linha-montagem', isEnabled: true, isOnline: true, lastSeen: generatedAt, temperatureC: 66.1, vibrationMs2: 1.7, rpm: 812, energyKwh: 6.2, severity: 'Info', locationX: 50, locationY: 34 },
-      { machineId: 'belt-01', name: 'Tapete Rolante', zoneId: 'corredor-a', isEnabled: true, isOnline: true, lastSeen: generatedAt, temperatureC: 59.3, vibrationMs2: 1.1, rpm: 404, energyKwh: 3.4, severity: 'Info', locationX: 65, locationY: 45 }
+      { machineId: 'press-01', name: 'Hydraulic Press', zoneId: 'production-area', isEnabled: true, isOnline: true, lastSeen: generatedAt, temperatureC: 78.4, vibrationMs2: 3.2, rpm: 1210, energyKwh: 9.5, severity: 'Info', locationX: 22, locationY: 28 },
+      { machineId: 'line-01', name: 'Assembly Line', zoneId: 'assembly-line', isEnabled: true, isOnline: true, lastSeen: generatedAt, temperatureC: 66.1, vibrationMs2: 1.7, rpm: 812, energyKwh: 6.2, severity: 'Info', locationX: 50, locationY: 34 },
+      { machineId: 'belt-01', name: 'Conveyor Belt', zoneId: 'aisle-a', isEnabled: true, isOnline: true, lastSeen: generatedAt, temperatureC: 59.3, vibrationMs2: 1.1, rpm: 404, energyKwh: 3.4, severity: 'Info', locationX: 65, locationY: 45 }
     ],
     floorplan: {
       id: 1,
-      name: 'Armazém Principal',
+      name: 'Main Warehouse',
       canvasWidth: 1200,
       canvasHeight: 760,
       textureKey: 'warehouse-grid',
@@ -650,16 +704,22 @@ function createFallbackWorkspace(): WorkspaceSnapshot {
       ]),
       updatedAt: generatedAt,
       pins: [
-        { id: 1, deviceType: 'Light', deviceId: 'light-carga', label: 'Luz da Zona de Carga', x: 14, y: 16, isVisible: true, zoneId: 'zona-carga' },
-        { id: 2, deviceType: 'Light', deviceId: 'light-corridor-a', label: 'Luz do Corredor A', x: 42, y: 42, isVisible: true, zoneId: 'corredor-a' },
-        { id: 3, deviceType: 'Light', deviceId: 'light-corridor-b', label: 'Luz do Corredor B', x: 72, y: 42, isVisible: true, zoneId: 'corredor-b' },
-        { id: 4, deviceType: 'Light', deviceId: 'light-office', label: 'Luz dos Escritórios', x: 83, y: 16, isVisible: true, zoneId: 'escritorios' },
-        { id: 5, deviceType: 'Machine', deviceId: 'press-01', label: 'Prensa Hidráulica', x: 22, y: 28, isVisible: true, zoneId: 'zona-producao' },
-        { id: 6, deviceType: 'Machine', deviceId: 'line-01', label: 'Linha de Montagem', x: 50, y: 34, isVisible: true, zoneId: 'linha-montagem' },
-        { id: 7, deviceType: 'Machine', deviceId: 'belt-01', label: 'Tapete Rolante', x: 65, y: 45, isVisible: true, zoneId: 'corredor-a' }
+        { id: 1, deviceType: 'Light', deviceId: 'light-loading', label: 'Loading Bay Light', x: 14, y: 16, isVisible: true, zoneId: 'loading-bay' },
+        { id: 2, deviceType: 'Light', deviceId: 'light-aisle-a', label: 'Aisle A Light', x: 42, y: 42, isVisible: true, zoneId: 'aisle-a' },
+        { id: 3, deviceType: 'Light', deviceId: 'light-aisle-b', label: 'Aisle B Light', x: 72, y: 42, isVisible: true, zoneId: 'aisle-b' },
+        { id: 4, deviceType: 'Light', deviceId: 'light-office', label: 'Office Light', x: 83, y: 16, isVisible: true, zoneId: 'offices' },
+        { id: 5, deviceType: 'Machine', deviceId: 'press-01', label: 'Hydraulic Press', x: 22, y: 28, isVisible: true, zoneId: 'production-area' },
+        { id: 6, deviceType: 'Machine', deviceId: 'line-01', label: 'Assembly Line', x: 50, y: 34, isVisible: true, zoneId: 'assembly-line' },
+        { id: 7, deviceType: 'Machine', deviceId: 'belt-01', label: 'Conveyor Belt', x: 65, y: 45, isVisible: true, zoneId: 'aisle-a' }
       ]
     }
   };
+}
+
+function readTabFromHash(): AppTab {
+  const candidate = window.location.hash.replace('#', '');
+  const known: AppTab[] = ['dashboard', 'reports', 'profiles', 'admin', 'floorplan'];
+  return known.includes(candidate as AppTab) ? candidate as AppTab : 'dashboard';
 }
 
 function applyTelemetryBatch(current: WorkspaceSnapshot, batch: Map<string, MachineTelemetry>): WorkspaceSnapshot {
@@ -700,7 +760,7 @@ function applyTelemetryBatch(current: WorkspaceSnapshot, batch: Map<string, Mach
     };
   });
 
-  // Telemetria de uma máquina desconhecida não deve forçar um re-render.
+  // Telemetry for an unknown machine must not force a re-render.
   if (!changed) return current;
 
   return { ...current, dashboard: { ...current.dashboard, machines: dashboardMachines }, machines };

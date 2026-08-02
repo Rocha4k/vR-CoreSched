@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Options;
+﻿using Microsoft.Extensions.Options;
 using Warehouse.Backend.Contracts;
 using Warehouse.Backend.Infrastructure;
 
@@ -35,23 +35,23 @@ public sealed class ConsumptionAggregationWorker : BackgroundService
             }
             catch (Exception exception)
             {
-                // Uma falha pontual não pode matar o worker: o ciclo seguinte volta a tentar.
-                _logger.LogError(exception, "Falha na agregação de consumo.");
+                // A one-off failure must not kill the worker: the next cycle retries.
+                _logger.LogError(exception, "Consumption aggregation failed.");
             }
         }
     }
 
     private async Task AggregateAsync(TimeSpan interval, CancellationToken cancellationToken)
     {
-        // Agrega a janela fechada mais recente. A versão anterior somava sempre os
-        // últimos 5000 eventos, contando a mesma telemetria em cada execução.
+        // Aggregates the most recently closed window. The previous version always summed
+        // the last 5000 events, counting the same telemetry on every run.
         var windowEnd = Floor(DateTimeOffset.UtcNow, interval);
         var windowStart = windowEnd - interval;
 
         var written = await _store.WriteConsumptionAggregatesAsync(windowStart, windowEnd, _options.EnergyEuroPerKwh, cancellationToken);
         if (written > 0)
         {
-            _logger.LogInformation("Agregados {Count} registos de consumo para a janela {Start:o} - {End:o}.", written, windowStart, windowEnd);
+            _logger.LogInformation("Wrote {Count} consumption aggregates for window {Start:o} - {End:o}.", written, windowStart, windowEnd);
         }
     }
 
@@ -66,7 +66,7 @@ public sealed class ConsumptionAggregationWorker : BackgroundService
         var removed = await _store.PurgeTelemetryOlderThanAsync(cutoff, cancellationToken);
         if (removed > 0)
         {
-            _logger.LogInformation("Removidos {Count} eventos de telemetria anteriores a {Cutoff:o}.", removed, cutoff);
+            _logger.LogInformation("Pruned {Count} telemetry events older than {Cutoff:o}.", removed, cutoff);
         }
     }
 

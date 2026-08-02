@@ -5,16 +5,23 @@ type Props = {
 };
 
 export function AlertStrip({ alerts }: Props) {
-  const topAlert = alerts[0];
+  const topAlert = alerts.find(alert => !alert.isAcknowledged) ?? alerts[0];
 
   if (!topAlert) {
-    return <div className="alert-strip calm">Sem alertas críticos neste momento.</div>;
+    return (
+      <div className="alert-strip">
+        <span className="alert-strip__icon" />
+        <span className="alert-strip__text">All clear — no active alerts.</span>
+      </div>
+    );
   }
 
   return (
     <div className={`alert-strip ${topAlert.severity.toLowerCase()}`}>
-      <strong>{topAlert.severity}</strong>
-      <span>{topAlert.message}</span>
+      <span className="alert-strip__icon" />
+      <span className="rule-code">{topAlert.ruleCode}</span>
+      <span className="alert-strip__text">{topAlert.message}</span>
+      <span className="alert-strip__time">{new Date(topAlert.startTime).toLocaleTimeString()}</span>
     </div>
   );
 }

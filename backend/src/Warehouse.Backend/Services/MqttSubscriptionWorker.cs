@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Extensions.Options;
@@ -36,7 +36,7 @@ public sealed class MqttSubscriptionWorker : BackgroundService
         _logger = logger;
     }
 
-    /// <summary>Consumido pelo health check de readiness.</summary>
+    /// <summary>Consumed by the readiness health check.</summary>
     public bool IsConnected => _client?.IsConnected ?? false;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -47,17 +47,17 @@ public sealed class MqttSubscriptionWorker : BackgroundService
         client.ApplicationMessageReceivedAsync += message => HandleMessageAsync(message, stoppingToken);
         client.ConnectedAsync += async _ =>
         {
-            // Subscrever no evento de ligação garante que uma reconexão volta a subscrever.
+            // Subscribing on the connected event guarantees a reconnect re-subscribes.
             await client.SubscribeAsync(new MqttClientSubscribeOptionsBuilder()
                 .WithTopicFilter(MqttTopicCatalog.MachineTelemetry)
                 .WithTopicFilter(MqttTopicCatalog.LightingState)
                 .Build(), stoppingToken);
 
-            _logger.LogInformation("Ligado ao broker MQTT {Host}:{Port}.", _options.MqttHost, _options.MqttPort);
+            _logger.LogInformation("Connected to MQTT broker {Host}:{Port}.", _options.MqttHost, _options.MqttPort);
         };
         client.DisconnectedAsync += _ =>
         {
-            _logger.LogWarning("Ligação MQTT perdida. A tentar reconectar.");
+            _logger.LogWarning("MQTT connection lost. Reconnecting.");
             return Task.CompletedTask;
         };
 
@@ -87,7 +87,7 @@ public sealed class MqttSubscriptionWorker : BackgroundService
             }
             catch (Exception exception)
             {
-                _logger.LogWarning(exception, "Falha a ligar ao broker MQTT. Nova tentativa em {Delay}.", backoff);
+                _logger.LogWarning(exception, "Failed to connect to the MQTT broker. Retrying in {Delay}.", backoff);
                 await Task.Delay(backoff, stoppingToken);
                 backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, MaxBackoff.Ticks));
             }
@@ -119,12 +119,12 @@ public sealed class MqttSubscriptionWorker : BackgroundService
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // Encerramento normal.
+            // Normal shutdown.
         }
         catch (Exception exception)
         {
-            // Uma mensagem inválida não pode derrubar o consumidor MQTT.
-            _logger.LogError(exception, "Falha a processar mensagem MQTT do tópico {Topic}.", topic);
+            // A malformed message must not take down the MQTT consumer.
+            _logger.LogError(exception, "Failed to process MQTT message from topic {Topic}.", topic);
         }
     }
 
@@ -133,7 +133,7 @@ public sealed class MqttSubscriptionWorker : BackgroundService
         var telemetry = JsonSerializer.Deserialize<MachineTelemetryDto>(json, JsonOptions);
         if (telemetry is null || string.IsNullOrWhiteSpace(telemetry.MachineId) || telemetry.Timestamp == default)
         {
-            _logger.LogDebug("Telemetria descartada por payload inválido.");
+            _logger.LogDebug("Telemetry discarded: invalid payload.");
             return;
         }
 
@@ -152,7 +152,7 @@ public sealed class MqttSubscriptionWorker : BackgroundService
         var lighting = JsonSerializer.Deserialize<LightingStateDto>(json, JsonOptions);
         if (lighting is null || string.IsNullOrWhiteSpace(lighting.DeviceId))
         {
-            _logger.LogDebug("Estado de iluminação descartado por payload inválido.");
+            _logger.LogDebug("Lighting state discarded: invalid payload.");
             return;
         }
 

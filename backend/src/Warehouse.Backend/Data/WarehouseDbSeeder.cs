@@ -10,37 +10,37 @@ public static class WarehouseDbSeeder
         if (!await db.Zones.AnyAsync(cancellationToken))
         {
             db.Zones.AddRange(
-                new ZoneEntity { ZoneId = "zona-carga", Name = "Zona de Carga", Description = "Área de receção e expedição.", Color = "#f59e0b", IsActive = true },
-                new ZoneEntity { ZoneId = "zona-producao", Name = "Zona de Produção", Description = "Área principal das máquinas pesadas.", Color = "#22c55e", IsActive = true },
-                new ZoneEntity { ZoneId = "linha-montagem", Name = "Linha de Montagem", Description = "Montagem e acabamento.", Color = "#38bdf8", IsActive = true },
-                new ZoneEntity { ZoneId = "corredor-a", Name = "Corredor A", Description = "Corredor principal.", Color = "#a78bfa", IsActive = true },
-                new ZoneEntity { ZoneId = "corredor-b", Name = "Corredor B", Description = "Corredor secundário.", Color = "#f97316", IsActive = true },
-                new ZoneEntity { ZoneId = "escritorios", Name = "Escritórios", Description = "Zona administrativa.", Color = "#f43f5e", IsActive = true });
+                new ZoneEntity { ZoneId = "loading-bay", Name = "Loading Bay", Description = "Goods receiving and dispatch.", Color = "#d8d8de", IsActive = true },
+                new ZoneEntity { ZoneId = "production-area", Name = "Production Area", Description = "Main heavy machinery floor.", Color = "#b4b4bd", IsActive = true },
+                new ZoneEntity { ZoneId = "assembly-line", Name = "Assembly Line", Description = "Assembly and finishing.", Color = "#9a9aa4", IsActive = true },
+                new ZoneEntity { ZoneId = "aisle-a", Name = "Aisle A", Description = "Main aisle.", Color = "#80808b", IsActive = true },
+                new ZoneEntity { ZoneId = "aisle-b", Name = "Aisle B", Description = "Secondary aisle.", Color = "#6a6a75", IsActive = true },
+                new ZoneEntity { ZoneId = "offices", Name = "Offices", Description = "Administrative area.", Color = "#55555f", IsActive = true });
         }
 
         if (!await db.Machines.AnyAsync(cancellationToken))
         {
             db.Machines.AddRange(
-                new MachineEntity { MachineId = "press-01", Name = "Prensa Hidráulica", ZoneId = "zona-producao", IsEnabled = true, IsOnline = true, LastSeen = DateTimeOffset.UtcNow, TemperatureC = 72, VibrationMs2 = 2.3m, Rpm = 1200, EnergyKwh = 9.1m, Severity = "Info", LocationX = 22, LocationY = 28 },
-                new MachineEntity { MachineId = "line-01", Name = "Linha de Montagem", ZoneId = "linha-montagem", IsEnabled = true, IsOnline = true, LastSeen = DateTimeOffset.UtcNow, TemperatureC = 66, VibrationMs2 = 1.8m, Rpm = 820, EnergyKwh = 6.4m, Severity = "Info", LocationX = 50, LocationY = 34 },
-                new MachineEntity { MachineId = "belt-01", Name = "Tapete Rolante", ZoneId = "corredor-a", IsEnabled = true, IsOnline = true, LastSeen = DateTimeOffset.UtcNow, TemperatureC = 58, VibrationMs2 = 1.1m, Rpm = 400, EnergyKwh = 3.2m, Severity = "Info", LocationX = 65, LocationY = 45 });
+                new MachineEntity { MachineId = "press-01", Name = "Hydraulic Press", ZoneId = "production-area", IsEnabled = true, IsOnline = true, LastSeen = DateTimeOffset.UtcNow, TemperatureC = 72, VibrationMs2 = 2.3m, Rpm = 1200, EnergyKwh = 9.1m, Severity = "Info", LocationX = 22, LocationY = 28 },
+                new MachineEntity { MachineId = "line-01", Name = "Assembly Line", ZoneId = "assembly-line", IsEnabled = true, IsOnline = true, LastSeen = DateTimeOffset.UtcNow, TemperatureC = 66, VibrationMs2 = 1.8m, Rpm = 820, EnergyKwh = 6.4m, Severity = "Info", LocationX = 50, LocationY = 34 },
+                new MachineEntity { MachineId = "belt-01", Name = "Conveyor Belt", ZoneId = "aisle-a", IsEnabled = true, IsOnline = true, LastSeen = DateTimeOffset.UtcNow, TemperatureC = 58, VibrationMs2 = 1.1m, Rpm = 400, EnergyKwh = 3.2m, Severity = "Info", LocationX = 65, LocationY = 45 });
         }
 
         if (!await db.LightingDevices.AnyAsync(cancellationToken))
         {
             db.LightingDevices.AddRange(
-                new LightingDeviceEntity { DeviceId = "light-carga", ZoneId = "zona-carga", Name = "Luz da Zona de Carga", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 14, LocationY = 16, IsVisible = true },
-                new LightingDeviceEntity { DeviceId = "light-corridor-a", ZoneId = "corredor-a", Name = "Luz do Corredor A", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 42, LocationY = 42, IsVisible = true },
-                new LightingDeviceEntity { DeviceId = "light-corridor-b", ZoneId = "corredor-b", Name = "Luz do Corredor B", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 72, LocationY = 42, IsVisible = true },
-                new LightingDeviceEntity { DeviceId = "light-office", ZoneId = "escritorios", Name = "Luz dos Escritórios", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 83, LocationY = 16, IsVisible = true });
+                new LightingDeviceEntity { DeviceId = "light-loading", ZoneId = "loading-bay", Name = "Loading Bay Light", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 14, LocationY = 16, IsVisible = true },
+                new LightingDeviceEntity { DeviceId = "light-aisle-a", ZoneId = "aisle-a", Name = "Aisle A Light", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 42, LocationY = 42, IsVisible = true },
+                new LightingDeviceEntity { DeviceId = "light-aisle-b", ZoneId = "aisle-b", Name = "Aisle B Light", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 72, LocationY = 42, IsVisible = true },
+                new LightingDeviceEntity { DeviceId = "light-office", ZoneId = "offices", Name = "Office Light", IsOn = true, LastChangedAt = DateTimeOffset.UtcNow, LastCommandSource = "seed", LocationX = 83, LocationY = 16, IsVisible = true });
         }
 
         if (!await db.Rules.AnyAsync(cancellationToken))
         {
             db.Rules.AddRange(
-                new RuleDefinitionEntity { Id = "rule-temp-vib-press", Code = "TEMP_VIB_001", Name = "Prensa crítica por temperatura e vibração", TargetType = "Machine", TargetId = "press-01", Severity = "Critical", TemperatureThreshold = 85, VibrationThreshold = 8, DurationSeconds = 5, CooldownSeconds = 30, IsEnabled = true },
-                new RuleDefinitionEntity { Id = "rule-temp-vib-line", Code = "TEMP_VIB_002", Name = "Linha de montagem sob stress", TargetType = "Machine", TargetId = "line-01", Severity = "Warning", TemperatureThreshold = 82, VibrationThreshold = 7, DurationSeconds = 6, CooldownSeconds = 30, IsEnabled = true },
-                new RuleDefinitionEntity { Id = "rule-light-off-hours", Code = "LIGHT_WASTE_001", Name = "Luz fora de horário", TargetType = "Zone", TargetId = "corredor-a", Severity = "Info", TemperatureThreshold = 0, VibrationThreshold = 0, DurationSeconds = 0, CooldownSeconds = 60, IsEnabled = true });
+                new RuleDefinitionEntity { Id = "rule-temp-vib-press", Code = "TEMP_VIB_001", Name = "Press critical on temperature and vibration", TargetType = "Machine", TargetId = "press-01", Severity = "Critical", TemperatureThreshold = 85, VibrationThreshold = 8, DurationSeconds = 5, CooldownSeconds = 30, IsEnabled = true },
+                new RuleDefinitionEntity { Id = "rule-temp-vib-line", Code = "TEMP_VIB_002", Name = "Assembly line under stress", TargetType = "Machine", TargetId = "line-01", Severity = "Warning", TemperatureThreshold = 82, VibrationThreshold = 7, DurationSeconds = 6, CooldownSeconds = 30, IsEnabled = true },
+                new RuleDefinitionEntity { Id = "rule-belt-overheat", Code = "TEMP_VIB_003", Name = "Conveyor belt overheating", TargetType = "Machine", TargetId = "belt-01", Severity = "Warning", TemperatureThreshold = 78, VibrationThreshold = 6, DurationSeconds = 8, CooldownSeconds = 60, IsEnabled = true });
         }
 
         if (!await db.Floorplans.AnyAsync(cancellationToken))
@@ -48,7 +48,7 @@ public static class WarehouseDbSeeder
             var floorplan = new FloorplanLayoutEntity
             {
                 Id = 1,
-                Name = "Armazém Principal",
+                Name = "Main Warehouse",
                 CanvasWidth = 1200,
                 CanvasHeight = 760,
                 TextureKey = "warehouse-grid",
@@ -66,13 +66,13 @@ public static class WarehouseDbSeeder
 
             floorplan.Pins.AddRange(new[]
             {
-                new FloorplanPinEntity { Id = 1, DeviceType = "Light", DeviceId = "light-carga", Label = "Luz da Zona de Carga", X = 14, Y = 16, IsVisible = true, ZoneId = "zona-carga" },
-                new FloorplanPinEntity { Id = 2, DeviceType = "Light", DeviceId = "light-corridor-a", Label = "Luz do Corredor A", X = 42, Y = 42, IsVisible = true, ZoneId = "corredor-a" },
-                new FloorplanPinEntity { Id = 3, DeviceType = "Light", DeviceId = "light-corridor-b", Label = "Luz do Corredor B", X = 72, Y = 42, IsVisible = true, ZoneId = "corredor-b" },
-                new FloorplanPinEntity { Id = 4, DeviceType = "Light", DeviceId = "light-office", Label = "Luz dos Escritórios", X = 83, Y = 16, IsVisible = true, ZoneId = "escritorios" },
-                new FloorplanPinEntity { Id = 5, DeviceType = "Machine", DeviceId = "press-01", Label = "Prensa Hidráulica", X = 22, Y = 28, IsVisible = true, ZoneId = "zona-producao" },
-                new FloorplanPinEntity { Id = 6, DeviceType = "Machine", DeviceId = "line-01", Label = "Linha de Montagem", X = 50, Y = 34, IsVisible = true, ZoneId = "linha-montagem" },
-                new FloorplanPinEntity { Id = 7, DeviceType = "Machine", DeviceId = "belt-01", Label = "Tapete Rolante", X = 65, Y = 45, IsVisible = true, ZoneId = "corredor-a" }
+                new FloorplanPinEntity { Id = 1, DeviceType = "Light", DeviceId = "light-loading", Label = "Loading Bay Light", X = 14, Y = 16, IsVisible = true, ZoneId = "loading-bay" },
+                new FloorplanPinEntity { Id = 2, DeviceType = "Light", DeviceId = "light-aisle-a", Label = "Aisle A Light", X = 42, Y = 42, IsVisible = true, ZoneId = "aisle-a" },
+                new FloorplanPinEntity { Id = 3, DeviceType = "Light", DeviceId = "light-aisle-b", Label = "Aisle B Light", X = 72, Y = 42, IsVisible = true, ZoneId = "aisle-b" },
+                new FloorplanPinEntity { Id = 4, DeviceType = "Light", DeviceId = "light-office", Label = "Office Light", X = 83, Y = 16, IsVisible = true, ZoneId = "offices" },
+                new FloorplanPinEntity { Id = 5, DeviceType = "Machine", DeviceId = "press-01", Label = "Hydraulic Press", X = 22, Y = 28, IsVisible = true, ZoneId = "production-area" },
+                new FloorplanPinEntity { Id = 6, DeviceType = "Machine", DeviceId = "line-01", Label = "Assembly Line", X = 50, Y = 34, IsVisible = true, ZoneId = "assembly-line" },
+                new FloorplanPinEntity { Id = 7, DeviceType = "Machine", DeviceId = "belt-01", Label = "Conveyor Belt", X = 65, Y = 45, IsVisible = true, ZoneId = "aisle-a" }
             });
 
             db.Floorplans.Add(floorplan);
@@ -86,9 +86,9 @@ public static class WarehouseDbSeeder
                     Id = Guid.NewGuid(),
                     MachineId = "press-01",
                     AlertId = null,
-                    Title = "Verificação preventiva da prensa",
+                    Title = "Preventive press inspection",
                     Status = "Closed",
-                    Notes = "Lubrificação e inspeção concluídas no arranque do sistema.",
+                    Notes = "Lubrication and inspection completed during system bring-up.",
                     CreatedBy = "system",
                     CreatedAt = DateTimeOffset.UtcNow.AddDays(-2),
                     ClosedAt = DateTimeOffset.UtcNow.AddDays(-1),
@@ -99,16 +99,15 @@ public static class WarehouseDbSeeder
         if (!await db.Users.AnyAsync(cancellationToken))
         {
             db.Users.AddRange(
-                CreateUser("operator", "Operador de Linha", "Operator", "operator123"),
-                CreateUser("supervisor", "Supervisor de Turno", "Supervisor", "supervisor123"),
-                CreateUser("admin", "Administrador do Sistema", "Admin", "admin123"));
+                CreateUser("operator", "Line Operator", "Operator", "operator123"),
+                CreateUser("supervisor", "Shift Supervisor", "Supervisor", "supervisor123"),
+                CreateUser("admin", "System Administrator", "Admin", "admin123"));
         }
 
         if (db.ChangeTracker.HasChanges())
         {
             await db.SaveChangesAsync(cancellationToken);
         }
-
     }
 
     private static AppUserEntity CreateUser(string username, string fullName, string role, string password)

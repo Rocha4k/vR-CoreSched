@@ -12,7 +12,7 @@ public sealed class MachineSimulationWorker : BackgroundService
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(30);
 
-    // Probabilidade, por ciclo, de uma lâmpada mudar de estado sozinha.
+    // Chance, per cycle, that a lamp flips state on its own.
     private const int LightingChangeChancePercent = 2;
 
     private readonly SimulatorOptions _options;
@@ -29,20 +29,20 @@ public sealed class MachineSimulationWorker : BackgroundService
 
         MachineProfile[] machineCatalog =
         [
-            new("press-01", "Prensa Hidráulica", "zona-producao"),
-            new("line-01", "Linha de Montagem", "linha-montagem"),
-            new("belt-01", "Tapete Rolante", "corredor-a")
+            new("press-01", "Hydraulic Press", "production-area"),
+            new("line-01", "Assembly Line", "assembly-line"),
+            new("belt-01", "Conveyor Belt", "aisle-a")
         ];
 
         LightingState[] lightingCatalog =
         [
-            new("light-carga", "zona-carga", "Luz da Zona de Carga", true, DateTimeOffset.UtcNow, "seed"),
-            new("light-corridor-a", "corredor-a", "Luz do Corredor A", true, DateTimeOffset.UtcNow, "seed"),
-            new("light-corridor-b", "corredor-b", "Luz do Corredor B", true, DateTimeOffset.UtcNow, "seed"),
-            new("light-office", "escritorios", "Luz dos Escritórios", true, DateTimeOffset.UtcNow, "seed")
+            new("light-loading", "loading-bay", "Loading Bay Light", true, DateTimeOffset.UtcNow, "seed"),
+            new("light-aisle-a", "aisle-a", "Aisle A Light", true, DateTimeOffset.UtcNow, "seed"),
+            new("light-aisle-b", "aisle-b", "Aisle B Light", true, DateTimeOffset.UtcNow, "seed"),
+            new("light-office", "offices", "Office Light", true, DateTimeOffset.UtcNow, "seed")
         ];
 
-        // MachineCount e LightingCount estavam a ser ignorados pela configuração.
+        // MachineCount and LightingCount were being ignored by the configuration.
         _machines = machineCatalog.Take(Math.Clamp(_options.MachineCount, 1, machineCatalog.Length)).ToArray();
         _lighting = lightingCatalog.Take(Math.Clamp(_options.LightingCount, 0, lightingCatalog.Length)).ToList();
     }
@@ -67,7 +67,7 @@ public sealed class MachineSimulationWorker : BackgroundService
                 if (!client.IsConnected)
                 {
                     await client.ConnectAsync(options, stoppingToken);
-                    _logger.LogInformation("Simulador ligado ao broker MQTT {Host}:{Port}.", _options.MqttHost, _options.MqttPort);
+                    _logger.LogInformation("Simulator connected to MQTT broker {Host}:{Port}.", _options.MqttHost, _options.MqttPort);
                     backoff = TimeSpan.FromSeconds(1);
                 }
 
@@ -81,8 +81,8 @@ public sealed class MachineSimulationWorker : BackgroundService
             }
             catch (Exception exception)
             {
-                // O catch vazio anterior escondia falhas de ligação ao broker.
-                _logger.LogWarning(exception, "Falha a publicar no broker MQTT. Nova tentativa em {Delay}.", backoff);
+                // The previous empty catch hid broker connection failures.
+                _logger.LogWarning(exception, "Failed to publish to the MQTT broker. Retrying in {Delay}.", backoff);
                 await Task.Delay(backoff, stoppingToken);
                 backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, MaxBackoff.Ticks));
             }
@@ -110,8 +110,8 @@ public sealed class MachineSimulationWorker : BackgroundService
 
     private async Task PublishLightingAsync(IMqttClient client, CancellationToken cancellationToken)
     {
-        // Republicar um estado aleatório a cada segundo desfazia os comandos do
-        // operador na UI. Agora só se publica quando o estado simulado muda.
+        // Re-publishing a random state every second undid operator commands from
+        // the UI. Now a message only goes out when the simulated state changes.
         for (var index = 0; index < _lighting.Count; index++)
         {
             var current = _lighting[index];

@@ -100,8 +100,8 @@ export async function fetchMe(token: string): Promise<CurrentUser> {
   return requestJson<CurrentUser>('/api/auth/me', undefined, token);
 }
 
-// /api/rules é AdminOnly: pedi-lo com outro perfil rejeitava o Promise.all inteiro
-// e deixava Operadores e Supervisores presos aos dados de fallback locais.
+// /api/rules is AdminOnly: requesting it with any other role rejected the whole
+// Promise.all and left Operators and Supervisors stuck on local fallback data.
 export async function fetchWorkspace(token: string, role?: string): Promise<WorkspaceSnapshot> {
   const [dashboard, zones, machines, floorplan, rules] = await Promise.all([
     requestJson<WorkspaceSnapshot['dashboard']>('/api/dashboard', undefined, token),

@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Security.Claims;
 using System.Text;
 using System.Threading.RateLimiting;
@@ -61,16 +61,16 @@ builder.Services.AddAuthorization(options =>
 
 var authOptions = builder.Configuration.GetSection(WarehouseAuthOptions.SectionName).Get<WarehouseAuthOptions>() ?? new WarehouseAuthOptions();
 
-// HMAC-SHA256 exige pelo menos 256 bits de chave: falhar no arranque é melhor
-// do que falhar em cada login.
+// HMAC-SHA256 needs at least a 256-bit key: failing at startup beats
+// failing on every sign-in.
 if (Encoding.UTF8.GetByteCount(authOptions.SigningKey) < 32)
 {
-    throw new InvalidOperationException($"{WarehouseAuthOptions.SectionName}:SigningKey tem de ter pelo menos 32 bytes.");
+    throw new InvalidOperationException($"{WarehouseAuthOptions.SectionName}:SigningKey must be at least 32 bytes.");
 }
 
 if (!builder.Environment.IsDevelopment() && authOptions.SigningKey.Contains("demo", StringComparison.OrdinalIgnoreCase))
 {
-    throw new InvalidOperationException($"Configure {WarehouseAuthOptions.SectionName}:SigningKey fora de desenvolvimento.");
+    throw new InvalidOperationException($"Set {WarehouseAuthOptions.SectionName}:SigningKey outside of Development.");
 }
 
 var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(authOptions.SigningKey));
@@ -120,18 +120,18 @@ builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
 
-    // Rotas de comando (luzes, alertas, manutenção, configuração) por utilizador.
+    // Command routes (lighting, alerts, maintenance, configuration) partitioned per user.
     options.AddPolicy("commands", context => RateLimitPartition.GetFixedWindowLimiter(
         context.User.Identity?.Name ?? context.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 60, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 
-    // Login e refresh por IP, para travar tentativas em força bruta.
+    // Sign-in and refresh partitioned per IP, to slow down brute-force attempts.
     options.AddPolicy("auth", context => RateLimitPartition.GetFixedWindowLimiter(
         context.Connection.RemoteIpAddress?.ToString() ?? "anonymous",
         _ => new FixedWindowRateLimiterOptions { PermitLimit = 10, Window = TimeSpan.FromMinutes(1), QueueLimit = 0 }));
 });
 
-// Registado como singleton para que o health check possa observar o estado da ligação.
+// Registered as a singleton so the health check can observe the connection state.
 builder.Services.AddSingleton<MqttSubscriptionWorker>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<MqttSubscriptionWorker>());
 builder.Services.AddHostedService<OfflineMonitoringWorker>();
@@ -200,7 +200,7 @@ app.MapPut("/api/users/me", [Authorize] async (ClaimsPrincipal user, UpdateProfi
     }
 
     var updated = await identityService.UpdateProfileAsync(username, request, ct);
-    return updated is null ? Results.BadRequest(new { message = "Nao foi possivel atualizar o perfil." }) : Results.Ok(updated);
+    return updated is null ? Results.BadRequest(new { message = "Could not update the profile." }) : Results.Ok(updated);
 }).RequireRateLimiting("commands");
 
 app.MapGet("/api/users", [Authorize(Policy = "AdminOnly")] async (DemoIdentityService identityService, CancellationToken ct) => Results.Ok(await identityService.GetUsersAsync(ct)));

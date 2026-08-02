@@ -1,4 +1,4 @@
-namespace Warehouse.Backend.Contracts;
+﻿namespace Warehouse.Backend.Contracts;
 
 public sealed class WarehouseOptions
 {
@@ -10,23 +10,23 @@ public sealed class WarehouseOptions
     public int AlertCooldownSeconds { get; set; } = 30;
     public decimal EnergyEuroPerKwh { get; set; } = 0.18m;
 
-    /// <summary>Segundos sem telemetria a partir dos quais a máquina é considerada offline.</summary>
+    /// <summary>Seconds without telemetry after which a machine counts as offline.</summary>
     public int OfflineThresholdSeconds { get; set; } = 10;
 
-    /// <summary>Intervalo entre varrimentos de deteção de máquinas offline.</summary>
+    /// <summary>Interval between offline-detection sweeps.</summary>
     public int OfflineScanSeconds { get; set; } = 5;
 
-    /// <summary>Tempo de vida da cache de regras usada no caminho quente da telemetria.</summary>
+    /// <summary>Lifetime of the rule cache used on the telemetry hot path.</summary>
     public int RuleCacheSeconds { get; set; } = 30;
 
-    /// <summary>Dias de retenção da telemetria bruta. 0 desliga a limpeza.</summary>
+    /// <summary>Raw telemetry retention in days. 0 disables pruning.</summary>
     public int TelemetryRetentionDays { get; set; } = 7;
 
-    /// <summary>Limites aplicados às listas devolvidas pelo snapshot do dashboard.</summary>
+    /// <summary>Caps applied to the lists returned by the dashboard snapshot.</summary>
     public int SnapshotAlertLimit { get; set; } = 100;
     public int SnapshotAggregateLimit { get; set; } = 200;
     public int SnapshotMaintenanceLimit { get; set; } = 100;
 
-    /// <summary>Origens autorizadas para CORS.</summary>
+    /// <summary>Allowed CORS origins.</summary>
     public string[] AllowedOrigins { get; set; } = ["http://localhost:5173"];
 }

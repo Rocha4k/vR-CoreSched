@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Warehouse.Backend.Contracts;
@@ -48,7 +48,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
 
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
-        // O mapa máquina -> zona é pequeno e evita um JOIN por linha do relatório.
+        // The machine -> zone map is small and avoids a JOIN per report row.
         var machines = await db.Machines
             .AsNoTracking()
             .Select(item => new { item.MachineId, item.Name, item.ZoneId })
@@ -63,8 +63,8 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
             .AsNoTracking()
             .Where(item => item.PeriodStart >= monthStart && item.PeriodStart < monthEnd);
 
-        // Filtros empurrados para SQL: o âmbito máquina é direto, o âmbito zona
-        // inclui também as máquinas dessa zona.
+        // Filters pushed into SQL: machine scope is direct, zone scope also
+        // covers the machines that belong to that zone.
         if (!string.IsNullOrWhiteSpace(machineId))
         {
             query = query.Where(item => item.ScopeId == machineId);
@@ -159,8 +159,8 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
 
     public async Task<DashboardSnapshotDto> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
-        // Um único DbContext (uma ligação) para as cinco listas do dashboard,
-        // em vez de cinco contextos independentes.
+        // A single DbContext (one connection) for all five dashboard lists,
+        // instead of five independent contexts.
         await using var db = await _dbContextFactory.CreateDbContextAsync(cancellationToken);
 
         var machines = await QueryMachines(db).ToListAsync(cancellationToken);
@@ -294,7 +294,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
                 Id = Guid.NewGuid(),
                 MachineId = alert.MachineId,
                 AlertId = alertId,
-                Title = $"Manutenção gerada por alerta {alert.RuleCode}",
+                Title = $"Maintenance raised by alert {alert.RuleCode}",
                 Status = "Open",
                 Notes = note ?? alert.Message,
                 CreatedBy = acknowledgedBy,
@@ -432,7 +432,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
         entity.IsVisible = pin.IsVisible;
         entity.ZoneId = pin.ZoneId;
 
-        // A planta e o catálogo de máquinas partilham a posição do mesmo equipamento.
+        // The floor plan and the machine catalogue share the same equipment position.
         if (string.Equals(pin.DeviceType, "Machine", StringComparison.OrdinalIgnoreCase))
         {
             var machine = await db.Machines.FirstOrDefaultAsync(item => item.MachineId == pin.DeviceId, cancellationToken);
@@ -481,7 +481,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
             .AsNoTracking()
             .Where(item => item.Timestamp >= periodStart && item.Timestamp < periodEnd);
 
-        // Somas e médias calculadas em SQL (GROUP BY), sem trazer telemetria bruta para memória.
+        // Sums and averages computed in SQL (GROUP BY), without pulling raw telemetry into memory.
         var byMachine = await window
             .GroupBy(item => item.MachineId)
             .Select(group => new ScopeTotals("Machine", group.Key, group.Sum(item => item.EnergyKwh), group.Average(item => item.EnergyKwh)))
@@ -499,7 +499,7 @@ public sealed class PostgresWarehouseStore : IWarehouseStore
             return 0;
         }
 
-        // Idempotência: um novo arranque do worker não duplica a mesma janela.
+        // Idempotency: a worker restart must not duplicate the same window.
         var existing = await db.ConsumptionAggregates
             .AsNoTracking()
             .Where(item => item.PeriodStart == periodStart)

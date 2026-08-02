@@ -1,4 +1,4 @@
-using Microsoft.EntityFrameworkCore;
+﻿using Microsoft.EntityFrameworkCore;
 
 namespace Warehouse.Backend.Data;
 
@@ -44,7 +44,7 @@ public sealed class WarehouseDbContext : DbContext
             entity.ToTable("telemetry_events");
             entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.MachineId, item.Timestamp });
-            // Serve a agregação por janela e a limpeza por retenção.
+            // Serves windowed aggregation and retention pruning.
             entity.HasIndex(item => item.Timestamp);
         });
 
@@ -53,7 +53,7 @@ public sealed class WarehouseDbContext : DbContext
             entity.ToTable("alerts");
             entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.MachineId, item.StartTime });
-            // Serve o "últimos N alertas" do dashboard.
+            // Serves the dashboard's "latest N alerts".
             entity.HasIndex(item => item.StartTime);
             entity.Property(item => item.AcknowledgedBy).HasMaxLength(120);
             entity.Property(item => item.AcknowledgementNote).HasMaxLength(500);
@@ -64,7 +64,7 @@ public sealed class WarehouseDbContext : DbContext
             entity.ToTable("consumption_aggregates");
             entity.HasKey(item => item.Id);
             entity.HasIndex(item => new { item.ScopeType, item.ScopeId, item.PeriodStart });
-            // Serve os relatórios por mês e o snapshot do dashboard.
+            // Serves monthly reports and the dashboard snapshot.
             entity.HasIndex(item => item.PeriodStart);
         });
 

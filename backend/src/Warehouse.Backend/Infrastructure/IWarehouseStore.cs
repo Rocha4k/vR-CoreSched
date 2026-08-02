@@ -1,8 +1,8 @@
-using Warehouse.Backend.Contracts;
+﻿using Warehouse.Backend.Contracts;
 
 namespace Warehouse.Backend.Infrastructure;
 
-/// <summary>Instantâneo leve usado pela deteção de máquinas offline, sem carregar telemetria bruta.</summary>
+/// <summary>Lightweight snapshot used by offline detection, without loading raw telemetry.</summary>
 public sealed record MachineHeartbeat(string MachineId, string Name, DateTimeOffset? LastSeen);
 
 public interface IWarehouseStore
@@ -33,9 +33,9 @@ public interface IWarehouseStore
     Task SetMachineSeverityAsync(string machineId, string severity, CancellationToken cancellationToken = default);
     Task SetMachineOfflineAsync(string machineId, CancellationToken cancellationToken = default);
 
-    /// <summary>Agrega consumo por máquina e por zona diretamente em SQL para a janela indicada.</summary>
+    /// <summary>Aggregates consumption per machine and per zone directly in SQL for the given window.</summary>
     Task<int> WriteConsumptionAggregatesAsync(DateTimeOffset periodStart, DateTimeOffset periodEnd, decimal euroPerKwh, CancellationToken cancellationToken = default);
 
-    /// <summary>Remove telemetria bruta anterior ao limite e devolve o número de linhas eliminadas.</summary>
+    /// <summary>Deletes raw telemetry older than the cutoff and returns the number of rows removed.</summary>
     Task<int> PurgeTelemetryOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default);
 }

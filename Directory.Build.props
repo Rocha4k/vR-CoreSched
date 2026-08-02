@@ -4,5 +4,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <!-- Permite correr em máquinas que só tenham um runtime .NET mais recente instalado. -->
+    <RollForward>LatestMajor</RollForward>
   </PropertyGroup>
 </Project>
